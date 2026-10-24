@@ -152,7 +152,7 @@ window.__ModuleLoader__.load({
       }
 
       const running = bot?.running === true
-      const openPanel = () => { window.location.assign('/channel/panel') }
+      const openPanel = () => { window.open('/channel/panel', '_blank', 'noopener') }
       return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560, padding: '4px 0' } },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
           h('strong', null, '客服机器人'),
@@ -173,7 +173,7 @@ window.__ModuleLoader__.load({
           }, '打开控制面板'),
         ),
         h('div', { style: muted },
-          '控制面板是独立页面：会话列表、人工接管、备注、归档、QQ 凭证配置都在那里。'),
+          '点「打开控制面板」会在新标签页打开：会话列表、人工接管、备注、归档、QQ 凭证配置都在那里。'),
         h('div', { style: muted },
           '接管和回复也可以直接在会话标题栏操作：打开任意客服会话，右上角有「接管 / 回复」。'),
       )
