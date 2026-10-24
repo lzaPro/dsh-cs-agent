@@ -120,10 +120,15 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState(false)
 
       const load = useCallback(async () => {
+        const get = async (url) => {
+          const response = await fetch(url)
+          if (!response.ok) throw new Error(`${url} 返回 HTTP ${response.status}`)
+          return response.json()
+        }
         try {
           const [nextStatus, nextBot] = await Promise.all([
-            fetch('/channel/status').then(response => response.json()),
-            fetch('/channel/adapter').then(response => response.json()),
+            get('/channel/status'),
+            get('/channel/adapter'),
           ])
           setStatus(nextStatus)
           setBot(nextBot)
@@ -163,7 +168,10 @@ window.__ModuleLoader__.load({
             onClick: () => act(running ? 'stop' : 'start'),
           }, running ? '停止' : '启动'),
         ),
-        error === '' ? null : h('div', { style: { color: '#c33', fontSize: 13 } }, `网关不可用：${error}`),
+        error === '' ? null : h('div', { style: { color: '#c33', fontSize: 13 } },
+          `网关不可用：${error}`,
+          error.includes('404') ? h('div', { style: { ...muted, marginTop: 4 } },
+            '404 说明 cs-agent 插件没在当前 dsh 进程里加载：重启一次 dsh 就好。') : null),
         h('div', { style: muted },
           `对话 ${status?.conversations ?? '—'} · 自动 ${status?.ai ?? '—'} · 人工 ${status?.human ?? '—'}`),
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
