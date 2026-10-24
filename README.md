@@ -85,4 +85,4 @@ tools/         macOS Vision OCR 的 Swift 源码（可选）
 
 ## 许可
 
-MIT，见 [LICENSE](LICENSE)。三个包 `${}cs-agent`、`cs-ops`、`cs-panel` 各自也带一份。
+MIT，见 [LICENSE](LICENSE)。三个包 `cs-agent`、`cs-ops`、`cs-panel` 各自也带一份。
