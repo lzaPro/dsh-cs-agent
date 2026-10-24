@@ -1,6 +1,6 @@
-// 客服工作台：全部挂在 DSH 原生插槽上，不再单独做页面。
+// 客服控制面板：全部挂在 DSH 原生插槽上，不再单独做页面。
 //
-// - 设置 → 客服（左侧栏一级入口）：机器人状态、启停、工作台
+// - 设置 → 客服（左侧栏一级入口）：机器人状态、启停、控制面板入口
 // - 会话标题栏：接管 / 交还 / 回复
 // - 侧边栏会话行：人工接管时显示「人」
 //
@@ -112,7 +112,7 @@ window.__ModuleLoader__.load({
       return h('span', { title: '人工接管中', style: { fontSize: 10, lineHeight: '16px', opacity: 0.8 } }, '人')
     }
 
-    /** 设置 → 客服：状态条 + 内嵌工作台。 */
+    /** 设置 → 客服：状态条 + 控制面板入口。 */
     function SettingsPanel() {
       const [status, setStatus] = useState(null)
       const [bot, setBot] = useState(null)
@@ -152,10 +152,7 @@ window.__ModuleLoader__.load({
       }
 
       const running = bot?.running === true
-      const open = (target) => {
-        if (target === 'same') window.location.assign('/channel/panel')
-        else window.open('/channel/panel', '_blank', 'noopener')
-      }
+      const openPanel = () => { window.location.assign('/channel/panel') }
       return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 560, padding: '4px 0' } },
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
           h('strong', null, '客服机器人'),
@@ -172,15 +169,11 @@ window.__ModuleLoader__.load({
         h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
           h('button', {
             style: { ...button, fontSize: 13, padding: '6px 14px' },
-            onClick: () => open('same'),
-          }, '打开工作台'),
-          h('button', {
-            style: button,
-            onClick: () => open('blank'),
-          }, '新窗口打开'),
+            onClick: openPanel,
+          }, '打开控制面板'),
         ),
         h('div', { style: muted },
-          '工作台是独立页面：会话列表、人工接管、备注、归档、QQ 凭证配置都在那里。'),
+          '控制面板是独立页面：会话列表、人工接管、备注、归档、QQ 凭证配置都在那里。'),
         h('div', { style: muted },
           '接管和回复也可以直接在会话标题栏操作：打开任意客服会话，右上角有「接管 / 回复」。'),
       )

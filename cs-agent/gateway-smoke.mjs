@@ -339,7 +339,7 @@ check(badMode !== undefined, 'mode change requires a known conversation')
 
   const panelRes = { code: 0, body: '', writeHead(c) { this.code = c }, end(b) { this.body = b } }
   await panel.handleHttp({ method: 'GET', url: '/channel/panel', headers: {} }, panelRes)
-  check(panelRes.code === 200 && panelRes.body.includes('客服工作台'), 'panel page is served')
+  check(panelRes.code === 200 && panelRes.body.includes('客服控制面板'), 'panel page is served')
   check(panelRes.body.includes('/mode') && panelRes.body.includes('/reply'), 'panel page wires takeover and reply')
 }
 

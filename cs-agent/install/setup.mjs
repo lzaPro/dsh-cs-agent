@@ -118,7 +118,7 @@ console.log(`
 
 2. 重启 dsh，然后在「设置 → 插件 → 客服」里启动机器人
 
-3. 打开工作台：http://127.0.0.1:3080/channel/panel
+3. 打开控制面板：http://127.0.0.1:3080/channel/panel
 
 4. OCR：macOS 可运行 tools/build-ocr.sh；或安装 tesseract 后
    在插件配置里把 ocr 的 backend 改成 tesseract

@@ -1144,7 +1144,7 @@ function panelHtml(route) {
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>客服工作台</title>
+<title>客服控制面板</title>
 <style>
   :root {
     color-scheme: light dark;
@@ -1240,7 +1240,7 @@ function panelHtml(route) {
 <div class="app">
   <aside class="side">
     <div class="side-top">
-      <div class="title"><span class="dot" id="bot-dot"></span>客服工作台</div>
+      <div class="title"><span class="dot" id="bot-dot"></span>客服控制面板</div>
       <div class="side-actions">
         <button class="btn" id="bot-toggle">启动</button>
         <button class="btn" id="refresh">刷新</button>
