@@ -1,0 +1,23 @@
+{
+  "id": "example-error-slug",
+  "title": "一句能被搜到的标题，包含错误特征",
+  "status": "unverified",
+  "audience": "customer",
+  "errorSignatures": [
+    "exact error string",
+    "ERROR_CODE_123"
+  ],
+  "services": [
+    "sophclaw"
+  ],
+  "environments": [
+    "production"
+  ],
+  "symptom": "客户看到的现象，一两句话。",
+  "customerReply": "可以直接说给客户的话，不包含任何内部细节。",
+  "rootCause": "内部根因；没查清就写 unknown。",
+  "resolution": "内部处理步骤，编号写。audience=customer 时客服也看得到；audience=ops 时客服看不到。",
+  "verification": "怎么确认已经恢复。",
+  "tags": [],
+  "updated": "2026-10-23"
+}

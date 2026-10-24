@@ -1,0 +1,4 @@
+# 只有一行：让客户端模块扫描到这个包。
+- insert:
+    - id: cs-panel
+      name: '@local/dsh-cs-panel'

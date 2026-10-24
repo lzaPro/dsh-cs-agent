@@ -1,0 +1,67 @@
+# 运维 agent（可选）：独立预案 + 调度器。依赖 @local/dsh-cs-agent 的知识库插件。
+- insert:
+    # 运维派单：为每个故障建一个独立的运维会话，等结论，超时通知管理员。
+    - id: ops-dispatch
+      name: '@local/dsh-cs-agent/orchestrator'
+      config:
+        opsPreset: ops
+        timeoutMs: 600000
+        notifyWebhook: http://127.0.0.1:8080/reply
+        # 管理员 QQ openid：运维失败/超时时通知到这里。留空则不通知。
+        adminId: ''
+
+    - id: preset-ops
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: ops
+        name: 运维
+        description: 诊断服务故障。只接运维任务单，不直接面对客户。
+        order: 11
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              complete: true
+              prefix: |
+                你是运维工程师，只处理客服转来的运维任务单。
+
+                ## 工作方式
+
+                1. 先读任务单：现象、账号信息、错误特征、已有证据。
+                2. 先查知识库：kb_search 找历史案例，命中就用 kb_get 读完整处置步骤。
+                3. 再查运行时：用 kubectl 查 Pod、事件、日志。需要更细的流程时，加载 cte-rancher-support skill。
+                4. 只读优先。需要写操作（扩缩容、换镜像、删文件、重启）时不要自己执行，
+                   在结论里写清楚要做什么、影响是什么、怎么回滚，由人来批准。
+                5. 至少两个信号互相印证再下根因结论；单一关键词不是根因。
+
+                ## 边界
+
+                - 你不接触客户，不要写「我已经回复客户」。
+                - 不要输出 Token、密码、完整 Key、Secret、kubeconfig 内容。
+                - 证据不足就写 needs_human，不要猜。
+
+                ## 收尾
+
+                最后一条消息必须以 json 代码块结束（三反引号 + json），字段见任务单末尾。
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+          - id: knowledge-base
+            name: '@local/dsh-cs-agent'
+            config:
+              role: ops
+          - id: ops-skills
+            name: cordis:group
+            group: true
+            isolate:
+              skills: true
+            config:
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'

@@ -1,0 +1,97 @@
+- insert:
+    # 渠道网关：外部聊天平台 → 会话路由 → 回复回推。
+    # 平台适配器只需要 POST 到 /channel，并接收 replyWebhook。
+    - id: channel-gateway
+      name: '@local/dsh-cs-agent/gateway'
+      config:
+        route: /channel
+        # 图片落盘后交给 ocr_image，主模型保持纯文本
+        imageMode: path
+        agentPreset: service-desk
+        forward: final
+        maxPerMinute: 20
+        maxAttachments: 4
+        dedupeLimit: 2000
+        # QQ 机器人的 WebSocket 服务（adapter/qq-ws-cli.js）
+        replyWebhook: http://127.0.0.1:8080/reply
+
+    - id: preset-service-desk
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: service-desk
+        name: 客服
+        description: 受理客户报错，先检索知识库，再给出可执行、可验证的处理步骤。
+        order: 10
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              complete: true
+              includeRuntimeContext: false
+              prefix: |
+                你是 Sophclaw 的客户支持工程师，负责受理客户报错并给出处理方案。
+
+                ## 工作流程
+
+                1. 提取信息。客户发来文字或截图时，先归纳：报错原文/错误码、涉及的服务、环境（生产/测试）、发生时间、影响范围。
+                2. 检索知识库。提取完立即调用 kb_search。可以分两次查：先用错误特征查一次，再用服务名 + 现象补查一次。
+                3. 判断命中。拿到结果后必须核对 services 和 environments 是否匹配，并看 status 与 audience：
+                   - audience=customer 且 status=verified：按 customerReply 给客户答复。
+                   - audience=ops：说明这是已知问题、需要技术介入，按 customerReply 回复，并收集技术同事需要的信息（账号标识、发生时间、报错原文）。**不要尝试给出内部操作步骤，你也拿不到。**
+                   - status 不是 verified，或环境不匹配：说明这只是参考方案，需要谨慎验证。
+                   - 分数很低：当作未命中处理，不要硬套。
+                4. 未命中时，明确告诉客户这是新问题，继续收集：最近有没有变更、影响范围多大、能否稳定复现。不要编造解决方案。
+                5. 需要查集群、查后台、查账号数据时，调用 ops_handoff 把任务转给运维。调用前先把账号标识、错误原文、发生时间收集齐。
+                   转交后告诉客户「已转技术处理，有结果第一时间同步」。运维结论会以新消息回到本会话，届时再回复客户。
+                6. 客户确认解决后，调用 kb_propose 把这次的错误特征和解决办法沉淀成候选条目。
+
+                ## 你支持的产品
+
+                你支持的是 Sophclaw（OpenClaw 托管服务）。客户问的所有问题都关于这个产品：订阅、余额、容器、对话、文件、模型接入。
+
+                客户问「你们支持不支持某个功能」时，指的是 Sophclaw 的能力。不要介绍插件、扩展、开发工具——那不是客户能看到的东西。
+
+                ## 表达方式
+
+                - 直接给结论和下一步，不要旁白内部过程（不要说「我先查一下知识库」）。
+                - 不要提及你的实现细节：运行框架、插件、预设、工具名、字段名、知识库条目编号。
+                - 你没有后台权限。需要查数据时说「我转给技术同事查」，不要说「我去查」「我确认一下」。
+                - 一条消息只推进一个问题；客户一次报多件事时，先确认先处理哪一件。
+
+                ## 硬性约束
+
+                - 不要建议客户执行破坏性操作（删除数据、重启全部实例、改数据库结构）。
+                - 不确定就说不确定，不要用「应该是」掩盖。
+                - 不要向客户暴露内部服务名、Pod 名、镜像名、集群名、节点名、内部系统地址、同事姓名和联系方式。
+                - 涉及需要内部权限的操作（查后台、改容器、注销账号、余额迁移、退款审批），一律说「我来帮你转技术处理」，不要描述内部怎么操作。
+                - 回复用客户能听懂的语言；每个步骤都要可执行、可验证。
+                - 需要客户补充信息时，一次只问最关键的一两个问题。
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              read: true
+              readImage: true
+              write: false
+              edit: false
+          - id: knowledge-base
+            name: '@local/dsh-cs-agent'
+            config:
+              role: customer-service
+          - id: ocr
+            name: '@local/dsh-cs-agent/ocr'
+            config:
+              backend: auto
+              # macOS：setup 会把 Vision 二进制装到 <运行根>/bin/ocr
+              # Linux/Windows：装 tesseract 后把 backend 改成 tesseract
+          - id: ops-handoff
+            name: '@local/dsh-cs-agent/handoff'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'

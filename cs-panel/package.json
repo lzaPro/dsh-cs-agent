@@ -1,0 +1,38 @@
+{
+  "name": "@local/dsh-cs-panel",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CHANGE-ME/dsh-cs-agent.git"
+  },
+  "files": [
+    "client.js",
+    "cordis.patch.yml",
+    "index.js",
+    "icon.svg",
+    "locale",
+    "README.md",
+    "LICENSE"
+  ]
+}
