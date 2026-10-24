@@ -789,5 +789,32 @@ try {
 }
 check(lockError !== undefined && /already in use/.test(lockError.message), 'second instance on the same data dir is refused')
 
+// 回归：线上 cs-agent/cordis.patch.yml 不写 dataFile，apply() 必须自己用默认路径。
+// 之前这里直接 requireText(config.dataFile) → 抛错 → 插件静默不激活 → /channel/* 全 404。
+{
+  process.env.DSH_CS_ROOT = path.join(temp, 'apply-root')
+  const registered = []
+  const applyCtx = {
+    webServer: { register: (route) => { registered.push(route); return () => {} } },
+    effect: () => {},
+    on: () => () => {},
+  }
+  const shipped = {
+    route: '/channel',
+    imageMode: 'path',
+    agentPreset: 'service-desk',
+    forward: 'final',
+    maxPerMinute: 20,
+    maxAttachments: 4,
+    dedupeLimit: 2000,
+    replyWebhook: 'http://127.0.0.1:8080/reply',
+  }
+  let threw
+  try { apply(applyCtx, shipped) } catch (error) { threw = error }
+  check(threw === undefined, 'apply accepts the shipped config without dataFile', threw?.message)
+  check(registered.length === 1 && registered[0].path === '/channel', 'apply registers the /channel route', registered.length)
+  delete process.env.DSH_CS_ROOT
+}
+
 await fs.rm(temp, { recursive: true, force: true })
 process.exit(failed === 0 ? 0 : 1)

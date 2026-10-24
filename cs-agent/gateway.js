@@ -100,6 +100,11 @@ function isAlive(pid) {
   }
 }
 
+/** 解析会话映射文件：apply() 抢锁与 createGateway() 必须用同一个值。 */
+function resolveDataFile(config) {
+  return requireAbsolute(config?.dataFile ?? path.join(defaultPaths().data, 'sessions.json'), 'dataFile')
+}
+
 /**
  * Register the gateway on the host's HTTP server.
  * @param ctx - host context carrying the web server and agent services.
@@ -107,7 +112,7 @@ function isAlive(pid) {
  */
 export function apply(ctx, config) {
   // 两个 dsh 进程共用同一个数据目录会互相覆盖会话映射，启动即拦下。
-  const release = acquireDataLock(requireText(config?.dataFile, 'dataFile'))
+  const release = acquireDataLock(resolveDataFile(config))
   let gateway
   try {
     gateway = createGateway(ctx, config)
@@ -144,7 +149,7 @@ export function createGateway(ctx, config) {
     ? paths.eval
     : requireAbsolute(config.evalWorkspace, 'evalWorkspace')
   const agentPreset = requireText(config?.agentPreset, 'agentPreset')
-  const dataFile = requireAbsolute(config?.dataFile ?? path.join(paths.data, 'sessions.json'), 'dataFile')
+  const dataFile = resolveDataFile(config)
   const seenFile = `${dataFile.replace(/\.json$/, '')}-seen.json`
   const outboxFile = config?.outbox === undefined
     ? path.join(paths.data, 'outbox.jsonl')
