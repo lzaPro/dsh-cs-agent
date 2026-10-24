@@ -1,6 +1,6 @@
 // OCR tool smoke test: path guard, vision backend, tesseract backend.
 // Run with: node cs-agent/ocr-smoke.mjs
-import { promises as fs } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import { writeFileSync, chmodSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -35,17 +35,18 @@ await fs.mkdir(imageRoot, { recursive: true })
   check(error !== undefined && /inside/.test(error.message), 'rejects paths outside the image root')
 }
 
-// 2) macOS Vision 后端（需要已编译的二进制）
-{
-  const sample = path.join(imageRoot, 'sample.png')
-  await fs.copyFile('../.build/sample.png', sample)
-  const execute = mount({
-    imageRoot,
-    backend: 'vision',
-    visionBinary: path.resolve('../tools/bin/ocr'),
-  })
+// 2) macOS Vision 后端（需要已编译的二进制和一张样例截图；仓库里没有就跳过）
+const sample = path.join(imageRoot, 'sample.png')
+const sampleSource = path.resolve('../.build/sample.png')
+const visionBinary = path.resolve('../tools/bin/ocr')
+if (existsSync(sampleSource) && existsSync(visionBinary)) {
+  await fs.copyFile(sampleSource, sample)
+  const execute = mount({ imageRoot, backend: 'vision', visionBinary })
   const result = await execute({ path: sample })
   check(result.backend === 'vision' && result.text.includes('-122'), 'vision backend reads the screenshot', result.text.replace(/\n/g, ' ').slice(0, 60))
+} else {
+  await fs.writeFile(sample, 'not-a-real-png')
+  console.log('SKIP vision backend (needs tools/bin/ocr and .build/sample.png)')
 }
 
 // 3) tesseract 后端：用一个假命令验证参数与输出解析
@@ -53,7 +54,6 @@ await fs.mkdir(imageRoot, { recursive: true })
   const fake = path.join(temp, 'fake-tesseract.sh')
   writeFileSync(fake, '#!/bin/sh\necho "错误码 -122 disk quota exceed"\n')
   chmodSync(fake, 0o755)
-  const sample = path.join(imageRoot, 'sample.png')
   const execute = mount({ imageRoot, backend: 'tesseract', tesseractBinary: fake })
   const result = await execute({ path: sample })
   check(result.backend === 'tesseract' && result.text.includes('-122'), 'tesseract backend parses plain text')
@@ -64,7 +64,7 @@ await fs.mkdir(imageRoot, { recursive: true })
   const execute = mount({ imageRoot, backend: 'tesseract', tesseractBinary: '/nonexistent/tesseract' })
   let error
   try {
-    await execute({ path: path.join(imageRoot, 'sample.png') })
+    await execute({ path: sample })
   } catch (caught) {
     error = caught
   }
