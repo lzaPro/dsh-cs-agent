@@ -1,6 +1,6 @@
 // Development smoke test: exercises the tools without a Harness process.
 // Run with: node cs-agent/smoke.mjs
-import { promises as fs } from 'node:fs'
+import { existsSync, promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { apply } from './index.js'
@@ -12,7 +12,38 @@ function mount(role, kbDir) {
   return tools
 }
 
-const kb = path.resolve('../kb')
+/** 仓库里没有 ../kb 时，用自带的样例条目跑同一组断言。 */
+async function fixtureKb() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-fixture-'))
+  const entries = [
+    { id: 'subscription-fee-9-9-19-9', audience: 'customer', symptom: '客户发现余额少了 9.9 元，找不到消费记录，扣了9.9元' },
+    { id: 'pvc-disk-full', audience: 'ops', symptom: '-122 报错 磁盘写满 disk quota exceed', errorSignatures: ['-122', 'disk quota exceed'] },
+    { id: 'dialog-no-response', audience: 'customer', symptom: '对话没反应，发消息后一直没有回复' },
+    { id: 'signup-referral-rewards', audience: 'customer', symptom: '邀请好友没有奖励，奖励没到账' },
+    { id: 'gateway-token-changed', audience: 'customer', symptom: 'gateway token 401，鉴权失败' },
+    { id: 'refund-not-supported', audience: 'customer', symptom: '客户要求退款' },
+  ]
+  for (const entry of entries) {
+    const full = {
+      status: 'verified',
+      title: entry.id,
+      services: ['demo'],
+      environments: ['production'],
+      customerReply: '我们正在核对，稍后回复你。',
+      rootCause: '内部原因',
+      resolution: '内部处置步骤',
+      verification: '复查通过',
+      tags: ['demo'],
+      updated: '2026-01-01',
+      ...entry,
+    }
+    await fs.writeFile(path.join(dir, `${full.id}.json`), JSON.stringify(full, null, 2))
+  }
+  return dir
+}
+
+const source = path.resolve('../kb')
+const kb = existsSync(source) ? source : await fixtureKb()
 const cs = mount('customer-service', kb)
 const ops = mount('ops', kb)
 let failed = 0
