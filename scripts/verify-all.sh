@@ -27,6 +27,9 @@ echo '== shared knowledge base'
 echo '== rag units'
 (cd kb-core && node rag-smoke.mjs)
 
+echo '== tool output schemas'
+(cd kb-core && node tools-schema-smoke.mjs)
+
 echo '== rag retrieval quality'
 node scripts/eval-rag.mjs --strict
 

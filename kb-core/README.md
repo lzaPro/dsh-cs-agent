@@ -46,6 +46,17 @@ ctx.get('kbStore').stats()                                               // → 
 
 检索对中文友好：不分词，用「拉丁词 + 汉字 bigram」，所以「扣了9.9元」也能命中 `subscription-fee-9-9-19-9`。
 
+### 输出 schema 是硬契约
+
+三个工具的 `output.schema` 都写了 `additionalProperties: false`，宿主会**在模型看到结果之前**逐字段校验返回值。这带来一个陷阱：给 `store.search()` 加字段（比如 RAG 之后的 `signals`、`margin`）却忘了同步 schema，工具就变成硬错误
+
+```
+tool "kb_search" returned invalid output: "value.hits[0].signals"
+is not a declared property (additionalProperties: false)
+```
+
+模型拿不到结果，只能回头追问客户——表现为「答得客气但什么都没答」，从日志里很难看出是 schema 问题。所以加字段必须同时改两处，并且有 `kb-core/tools-schema-smoke.mjs` 守着：它驱动真实 `execute()`，用一个独立实现的小校验器按声明 schema 逐字段核对（含负向用例，证明这个校验器本身能抓到漏声明）。
+
 ## 检索：分块 → 双路召回 → 三级判定
 
 一条故障经验不是一个字符串，而是四段证据：**错误特征 / 现象 / 处置 / 验证**。检索对每段单独建索引，因为客户说的往往是「现象」，而答案在「处置」里。

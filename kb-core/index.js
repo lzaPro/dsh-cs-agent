@@ -150,6 +150,7 @@ export function createKbStore(config) {
           relevance: item.relevance,
           coverage: item.coverage,
           signature: item.signatures,
+          signatureTokens: item.signatureTokens,
           occurrences: item.occurrences,
         },
       }))
