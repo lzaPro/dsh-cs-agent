@@ -1,0 +1,16 @@
+{
+  "id": "demo-refund",
+  "title": "退款政策",
+  "status": "verified",
+  "audience": "customer",
+  "errorSignatures": ["退款", "退钱"],
+  "services": ["billing"],
+  "environments": ["production"],
+  "symptom": "客户要求退款。",
+  "customerReply": "目前套餐不支持退款，可以在当前周期结束前关闭自动续费，之后不再扣费。",
+  "rootCause": "",
+  "resolution": "说明退款政策，并指引关闭自动续费。",
+  "verification": "客户确认知晓政策。",
+  "tags": ["计费"],
+  "updated": "2026-10-24"
+}

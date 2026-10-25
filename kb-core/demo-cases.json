@@ -1,0 +1,74 @@
+[
+  {
+    "id": "sig-disk-full",
+    "query": "报错 no space left on device",
+    "expect": "demo-disk-full",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-disk-122",
+    "query": "返回 -122",
+    "expect": "demo-disk-full",
+    "tier": "direct"
+  },
+  {
+    "id": "para-disk",
+    "query": "日志说磁盘写满了",
+    "expect": "demo-disk-full",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-usage",
+    "query": "磁盘使用情况怎么看",
+    "expect": "demo-disk-usage",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-dialog",
+    "query": "对话没反应",
+    "expect": "demo-dialog-stuck",
+    "tier": "direct"
+  },
+  {
+    "id": "para-dialog",
+    "query": "发消息一直转圈没有回复",
+    "expect": "demo-dialog-stuck",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-401",
+    "query": "401 Unauthorized",
+    "expect": "demo-token-401",
+    "tier": "direct"
+  },
+  {
+    "id": "para-token",
+    "query": "提示 token 验证失败",
+    "expect": "demo-token-401",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-refund",
+    "query": "我要退款",
+    "expect": "demo-refund",
+    "tier": "direct"
+  },
+  {
+    "id": "miss-weather",
+    "query": "今天天气怎么样",
+    "expect": null,
+    "tier": "miss"
+  },
+  {
+    "id": "miss-printer",
+    "query": "打印机连不上",
+    "expect": null,
+    "tier": "miss"
+  },
+  {
+    "id": "ref-usage",
+    "query": "我用了多少",
+    "expect": "demo-disk-usage",
+    "tier": "direct"
+  }
+]

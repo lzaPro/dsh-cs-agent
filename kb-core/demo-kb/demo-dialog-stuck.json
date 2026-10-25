@@ -1,0 +1,16 @@
+{
+  "id": "demo-dialog-stuck",
+  "title": "对话没反应，一直转圈",
+  "status": "verified",
+  "audience": "customer",
+  "errorSignatures": ["对话没反应", "一直转圈", "发不出消息"],
+  "services": ["chat"],
+  "environments": ["production"],
+  "symptom": "客户发消息后一直转圈，等很久也没有回复。",
+  "customerReply": "已经收到你的消息，这个问题我转给技术同事看一下，稍后回复你。",
+  "rootCause": "对话容器卡住，事件没有消费。",
+  "resolution": "重启对话容器，确认队列恢复。",
+  "verification": "客户发消息能收到回复。",
+  "tags": ["对话"],
+  "updated": "2026-10-24"
+}

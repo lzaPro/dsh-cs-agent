@@ -1,0 +1,16 @@
+{
+  "id": "demo-disk-full",
+  "title": "磁盘写满：no space left on device",
+  "status": "verified",
+  "audience": "customer",
+  "errorSignatures": ["no space left on device", "disk quota exceeded", "-122"],
+  "services": ["any"],
+  "environments": ["production"],
+  "symptom": "容器写文件或启动时报磁盘空间不足，日志里出现 no space left on device。",
+  "customerReply": "这是磁盘空间不足。请先清理容器里的日志和临时目录，清完重启服务。",
+  "rootCause": "数据卷写满，无法再分配新块。",
+  "resolution": "清理 /tmp 与日志目录；必要时扩容数据卷。",
+  "verification": "df -h 显示可用空间恢复，服务重启后正常。",
+  "tags": ["磁盘", "存储"],
+  "updated": "2026-10-24"
+}

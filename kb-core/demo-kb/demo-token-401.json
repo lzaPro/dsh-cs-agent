@@ -1,0 +1,16 @@
+{
+  "id": "demo-token-401",
+  "title": "鉴权失败：401 Unauthorized",
+  "status": "verified",
+  "audience": "customer",
+  "errorSignatures": ["401", "Unauthorized", "token 验证失败", "鉴权失败"],
+  "services": ["api"],
+  "environments": ["production"],
+  "symptom": "调用接口返回 401，日志显示 token 验证失败。",
+  "customerReply": "密钥换过了，需要在控制台重新复制一次新的 Key，旧 Key 已经失效。",
+  "rootCause": "平台轮换了签名密钥，客户端仍用旧 token。",
+  "resolution": "在控制台重新生成并替换 Key。",
+  "verification": "调用返回 200。",
+  "tags": ["鉴权"],
+  "updated": "2026-10-24"
+}

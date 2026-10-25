@@ -1,0 +1,16 @@
+{
+  "id": "demo-disk-usage",
+  "title": "查磁盘和 CPU 用量",
+  "status": "verified",
+  "audience": "customer",
+  "errorSignatures": ["磁盘使用", "CPU 使用", "存储空间", "用量"],
+  "services": ["any"],
+  "environments": ["production"],
+  "symptom": "客户想知道自己的实例占用了多少磁盘和 CPU。",
+  "customerReply": "在用户中心可以看到存储和算力的用量，数据没加载出来时点右侧刷新。",
+  "rootCause": "",
+  "resolution": "引导客户到用户中心查看用量，必要时刷新页面。",
+  "verification": "客户能看到用量数据。",
+  "tags": ["用量"],
+  "updated": "2026-10-24"
+}

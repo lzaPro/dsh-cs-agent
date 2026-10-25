@@ -45,8 +45,39 @@ function flags(argv) {
 }
 
 const options = flags(process.argv.slice(2))
+
+/**
+ * Pick the first existing path, so the same script works in this workspace
+ * (real knowledge base) and in a freshly cloned repo (bundled demo fixtures).
+ *
+ * @param {string[]} candidates - absolute paths, best first.
+ * @returns {Promise<string|null>} the first that exists.
+ */
+async function firstExisting(candidates) {
+  for (const candidate of candidates) {
+    try {
+      await fs.access(candidate)
+      return candidate
+    } catch {
+      continue
+    }
+  }
+  return null
+}
+
+const realKb = path.resolve(workspace, 'kb')
 const casesFile = path.resolve(workspace, String(options.cases ?? 'eval/rag-cases.json'))
-const kbDir = path.resolve(workspace, String(options.kb ?? path.join('kb')))
+const fallbackCases = path.join(workspace, 'kb-core', 'demo-cases.json')
+const fallbackKb = path.join(workspace, 'kb-core', 'demo-kb')
+const resolvedCases = await firstExisting([casesFile, fallbackCases])
+const kbDir = path.resolve(workspace, String(options.kb ?? await firstExisting([realKb, fallbackKb])))
+if (resolvedCases === null) {
+  console.error('no case file found; expected eval/rag-cases.json or kb-core/demo-cases.json')
+  process.exit(1)
+}
+if (resolvedCases !== casesFile) {
+  console.log('note: eval/rag-cases.json not found, running the bundled demo fixtures')
+}
 const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-rag-eval-'))
 
 const store = createKbStore({
@@ -56,7 +87,7 @@ const store = createKbStore({
   embedding: { backend: String(options.embedding ?? 'hash') },
 })
 
-const cases = JSON.parse(await fs.readFile(casesFile, 'utf8'))
+const cases = JSON.parse(await fs.readFile(resolvedCases, 'utf8'))
 const rows = []
 for (const item of cases) {
   const result = await store.search({ query: item.query, limit: 3 }, 'customer-service')
