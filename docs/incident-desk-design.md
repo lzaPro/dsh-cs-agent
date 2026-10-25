@@ -6,10 +6,13 @@
 
 | 阶段 | 状态 | 产物 |
 |---|---|---|
-| 客服 Agent + 知识库 v0 | ✅ 已实现 | [`cs-agent/`](../cs-agent/README.md)、[`kb/`](../kb/README.md) |
+| 客服 Agent + 知识库 v0 | ✅ 已实现 | [`cs-agent/`](../cs-agent/README.md)、[`kb-core/`](../kb-core/README.md)（已抽成 `@local/dsh-kb` 共享包） |
 | 渠道网关（会话路由/去重/限流/附件） | ✅ 已实现并线上验证 | [`cs-agent/gateway.js`](../cs-agent/gateway.js)、[渠道契约](channel-contract.md) |
 | 平台适配器 | ✅ 已实现并线上验证 | [`cs-agent/adapter/`](../cs-agent/adapter/README.md) |
-| 运维 Agent + 交接协议 | 设计完成，未实现 | 本文第 4–6 节 |
+| 运维 Agent + 交接协议 | ✅ 已实现（运行时待重启验证） | [`ops-agent/`](../ops-agent/README.md)、[交接说明](ops-agent-handoff.md) |
+| 运维只读工具（kubectl / 日志 / 指标） | ✅ 已实现（缺只读 kubeconfig 才能真用） | [`ops-agent/cluster.js`](../ops-agent/cluster.js)、[`ops-agent/metrics.js`](../ops-agent/metrics.js) |
+| 变更提案 + 人工审批 | ✅ 已实现（v1 不自动执行） | [`ops-agent/dispatcher.js`](../ops-agent/dispatcher.js)、`/ops/panel` |
+| 内部 runbook（ops-kb） | ✅ 已实现 | [`ops-kb/`](../ops-kb/README.md) |
 | 值班升级 / 工单索引 | 设计完成，未实现 | 本文第 6、9 节 |
 
 ## 0. 一句话结论

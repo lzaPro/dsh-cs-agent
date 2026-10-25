@@ -1,0 +1,7 @@
+interface:
+  display_name: "CTE Rancher 支持"
+  short_description: "通过 Grafana 与 Rancher 安全排查 CTE 客户问题"
+  default_prompt: "Use $cte-rancher-support to investigate this CTE customer or OpenClaw incident with focused read-only checks."
+
+policy:
+  allow_implicit_invocation: true

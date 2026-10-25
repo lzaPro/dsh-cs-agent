@@ -6,16 +6,21 @@
 三个 npm 包，一层渠道网关，全部挂在 DSH 原生插槽上，不改 DSH 源码。
 
 ```
-客户 QQ ──► 适配器 ──► 渠道网关 ──► 客服 agent ──► 知识库
+客户 QQ ──► 适配器 ──► 渠道网关 ──► 客服 agent ──► 知识库（BM25 + 向量，三级判定）
                                 │
                                 └──► 运维 agent（可选，只和客服/管理员对话）
 ```
+
+知识库检索不是关键词匹配：一条故障经验拆成「错误特征 / 现象 / 处置 / 验证」四段分别建索引，
+双路召回后融合打分，按置信度判「直接答 / 只当线索 / 判未命中」，未命中时强制追问。
+设计细节和实测数字见 [docs/retrieval-design.md](docs/retrieval-design.md)。
 
 ## 包
 
 | 包 | 作用 |
 |---|---|
-| `cs-agent` | 渠道网关、知识库工具（`kb_search` / `kb_get` / `kb_propose`）、OCR、客服预设、QQ 适配器、安装脚本 |
+| `cs-agent` | 渠道网关、OCR、客服预设、QQ 适配器、安装脚本 |
+| `kb-core` | 共享知识库：分块索引、BM25 + 向量融合、三级判定、候选/去重/失效闭环、`kb_search` / `kb_get` / `kb_propose` |
 | `cs-ops` | 运维预设 + 派单调度器：每个故障开一个独立运维会话，等结论，超时通知管理员 |
 | `cs-panel` | DSH 界面：设置左栏入口、会话标题栏的「接管 / 回复」、侧栏「人」标记 |
 
@@ -63,16 +68,23 @@ QQ 凭证可以在「设置 → 客服」的配置页里填，也可以跑 `setu
 ./scripts/verify-all.sh
 ```
 
-255 项检查：知识库、网关（含配置读写）、接管、OCR、适配器、QQ 签名与事件、运维调度、运行时迁移、保留策略、安装器、客户端插槽渲染。
+496 项检查：知识库（含检索单测与 26 条标注用例的质量评测）、网关（含配置读写）、接管、OCR、适配器、QQ 签名与事件、运维调度、运行时迁移、保留策略、安装器、客户端插槽渲染。
+
+单独跑检索质量：
+
+```bash
+node scripts/eval-rag.mjs --strict    # recall@1 / recall@3 / miss-precision / tier-agreement
+```
 
 ## 目录
 
 ```
 cs-agent/      客服包 + adapter/ + install/ + kb-starter/
+kb-core/       共享知识库（检索、台账、审核闭环、工具）
 cs-ops/        运维包
 cs-panel/      界面插件（client.js）
 scripts/       导入、迁移、保留策略、会话对账、验证
-docs/          渠道契约、部署模式、事故台设计
+docs/          渠道契约、部署模式、事故台设计、检索设计
 tools/         macOS Vision OCR 的 Swift 源码（可选）
 ```
 

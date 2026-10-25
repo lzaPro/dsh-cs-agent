@@ -23,7 +23,7 @@ if (typeof to !== 'string' || !/^@[a-z0-9][a-z0-9._-]*$/i.test(to)) {
   process.exit(2)
 }
 
-const OLD = ['@local/dsh-cs-agent', '@local/dsh-cs-ops', '@local/dsh-cs-panel']
+const OLD = ['@local/dsh-cs-agent', '@local/dsh-cs-panel', '@local/dsh-kb', '@local/dsh-ops-agent']
 const NEW = OLD.map(name => `${to}/${name.split('/')[1]}`)
 const EXTENSIONS = new Set(['.js', '.mjs', '.json', '.yml', '.yaml', '.md'])
 const SKIP = new Set(['node_modules', '.git', '.build', 'dist'])
@@ -50,7 +50,7 @@ function walk(dir) {
 
 // 发布前还要去掉 private 标记
 if (yes) {
-  for (const name of ['cs-agent', 'cs-ops', 'cs-panel']) {
+  for (const name of ['cs-agent', 'cs-panel', 'kb-core', 'ops-agent']) {
     const manifest = join(root, name, 'package.json')
     const pkg = JSON.parse(readFileSync(manifest, 'utf8'))
     if (pkg.private === true) {

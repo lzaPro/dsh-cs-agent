@@ -1,0 +1,35 @@
+# 共享知识库（客服 + 运维）。
+#
+# 只挂一个宿主服务：kbStore。模型面向的工具在 @local/dsh-kb/tools 里，
+# 由各个预设按角色（customer-service / ops）分别挂载。
+#
+# 所有 key 都可以留空，留空即用默认值（~/.dsh/cs-runtime 下）。
+- insert:
+    - id: kb-store
+      name: '@local/dsh-kb'
+      config:
+        # 默认 ~/.dsh/cs-runtime/{kb,ops-kb}；换位置时只改这里。
+        kbDir: ''
+        opsKbDir: ''
+
+        # 索引缓存和「出现次数」台账都放在数据目录里。
+        # dataDir: ''
+        # indexDir: ''
+        # statsFile: ''
+
+        # 向量通道。hash 是本机特征哈希（默认：零依赖、离线可用）；
+        # http 走 OpenAI 兼容的 /embeddings；off 只留 BM25。
+        embedding:
+          backend: hash
+          # baseURL: 'https://api.example.com/v1'
+          # model: 'text-embedding-3-small'
+          # apiKeyEnv: 'EMBEDDING_API_KEY'
+          # timeoutMs: 15000
+          # onError: fallback        # fallback | throw
+
+        # 打分权重与判定阈值。想更保守就调低 direct，更爱追问就调高 direct。
+        # tuning:
+        #   direct: 0.56
+        #   reference: 0.3
+        #   margin: 0.08
+        #   directCoverage: 0.3

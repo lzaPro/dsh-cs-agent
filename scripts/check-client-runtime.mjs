@@ -21,6 +21,14 @@ const EXPECTED = {
       'sidebar.session.row.leading',
     ],
   },
+  'ops-agent/client.js': {
+    id: '@local/dsh-ops-agent',
+    slots: [
+      'settings.section',
+      'conversation.session.header.actions',
+      'sidebar.session.row.leading',
+    ],
+  },
 }
 
 let failed = 0

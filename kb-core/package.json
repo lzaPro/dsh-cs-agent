@@ -1,0 +1,26 @@
+{
+  "name": "@local/dsh-kb",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared file-backed knowledge base: kbStore host service plus role-gated kb_search/kb_get/kb_propose tools",
+  "exports": {
+    ".": "./index.js",
+    "./tools": "./tools.js",
+    "./kb": "./kb.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT",
+  "files": [
+    "index.js",
+    "tools.js",
+    "kb.js",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ]
+}

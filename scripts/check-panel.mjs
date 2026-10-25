@@ -8,6 +8,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createGateway } from '../cs-agent/gateway.js'
+import { handleHttp } from '../ops-agent/panel.js'
 
 const temp = mkdtempSync(path.join(tmpdir(), 'panel-check-'))
 const ctx = {
@@ -68,3 +69,51 @@ for (const marker of ['/orphans', '/adapter', '/mode', '/reply', '/label']) {
   }
 }
 console.log('PASS panel wires every endpoint')
+
+// ── 运维控制台：/ops/panel 的内联脚本同样用模板字符串拼，语法错只会在浏览器里炸。
+{
+  const opsTemp = mkdtempSync(path.join(tmpdir(), 'ops-panel-check-'))
+  const opsCtx = {
+    get: () => undefined,
+    logger: { warn() {}, info() {} },
+  }
+  const panel = { route: '/ops', cluster: { env: async () => ({ ok: true, checks: [] }) } }
+  const response = { code: 0, body: '', writeHead(code) { this.code = code }, end(body) { this.body = body } }
+  await handleHttp(opsCtx, panel, { method: 'GET', url: '/ops/panel', headers: {} }, response)
+
+  if (response.code !== 200) {
+    console.error(`FAIL ops panel responded ${response.code}`)
+    process.exit(1)
+  }
+  const opsScript = response.body.split('<script>')[1]?.split('</script>')[0]
+  if (opsScript === undefined) {
+    console.error('FAIL ops panel has no inline script')
+    process.exit(1)
+  }
+  const opsFile = path.join(opsTemp, 'panel.js')
+  writeFileSync(opsFile, opsScript)
+  try {
+    execFileSync(process.execPath, ['--check', opsFile], { stdio: 'pipe' })
+    console.log('PASS ops panel inline script parses')
+  } catch (error) {
+    console.error(`FAIL ops panel inline script: ${error.stderr?.toString() ?? error.message}`)
+    process.exit(1)
+  } finally {
+    rmSync(opsTemp, { recursive: true, force: true })
+  }
+  for (const marker of ['/status', '/incidents', '/proposals', '/kb/candidates', '/archive', '/delete', 'showArchived', "el('q')", 'data-archive=', 'data-del=']) {
+    if (!opsScript.includes(marker)) {
+      console.error(`FAIL ops panel script is missing ${marker}`)
+      process.exit(1)
+    }
+  }
+  console.log('PASS ops panel wires every endpoint')
+  // 搜索框和归档开关是可见控件：模板里少了任何一个，页面看着正常但没法用。
+  for (const marker of ['id="q"', 'id="showArchived"', '含归档']) {
+    if (!response.body.includes(marker)) {
+      console.error(`FAIL ops panel markup is missing ${marker}`)
+      process.exit(1)
+    }
+  }
+  console.log('PASS ops panel exposes search and archive controls')
+}

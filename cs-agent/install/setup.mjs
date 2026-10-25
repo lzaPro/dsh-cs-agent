@@ -46,10 +46,10 @@ function copyTree(source, target, options = {}) {
 
 // ── 目录 ────────────────────────────────────────────────────────────────
 step(`运行目录：${root}`)
-for (const name of ['customer', 'eval', 'ops', 'data', 'data/images', 'bin', 'adapter', 'kb']) {
+for (const name of ['customer', 'eval', 'ops', 'data', 'data/images', 'bin', 'adapter', 'kb', 'kb/_candidates', 'ops-kb']) {
   mkdirSync(join(root, name), { recursive: true })
 }
-console.log('  已创建 customer / eval / ops / data / bin / adapter / kb')
+console.log('  已创建 customer / eval / ops / data / bin / adapter / kb / ops-kb')
 
 // ── 适配器 ──────────────────────────────────────────────────────────────
 step('安装 QQ 适配器')

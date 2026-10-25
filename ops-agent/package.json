@@ -1,0 +1,48 @@
+{
+  "name": "@local/dsh-ops-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Operations agent: incident dispatcher, read-only cluster/log/metric tools, internal runbooks, and an admin panel",
+  "exports": {
+    ".": "./index.js",
+    "./dispatcher": "./dispatcher.js",
+    "./cluster": "./cluster.js",
+    "./metrics": "./metrics.js",
+    "./task-tools": "./task-tools.js",
+    "./panel": "./panel.js",
+    "./paths": "./paths.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-settings-plugins"
+      ]
+    }
+  },
+  "license": "MIT",
+  "files": [
+    "index.js",
+    "dispatcher.js",
+    "cluster.js",
+    "metrics.js",
+    "task-tools.js",
+    "panel.js",
+    "paths.js",
+    "client.js",
+    "skills",
+    "locale",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ]
+}

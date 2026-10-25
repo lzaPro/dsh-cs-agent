@@ -23,7 +23,7 @@ function mount(dispatch) {
   const execute = mount(undefined)
   let error
   try {
-    await execute({ symptom: '打不开' }, { agent: { id: 's1' } })
+    await execute({ symptom: '打不开' }, { agent: { session: { id: 's1' } } })
   } catch (caught) {
     error = caught
   }
@@ -34,9 +34,17 @@ function mount(dispatch) {
 {
   const calls = []
   const execute = mount({ dispatch: async request => { calls.push(request); return { incidentId: 'INC-1', opsSessionId: 'ops-1', state: 'dispatched' } } })
-  const result = await execute({ symptom: '打不开' }, { agent: { id: 's1' } })
+  const result = await execute({ symptom: '打不开' }, { agent: { session: { id: 's1' } } })
   check(result.incidentId === 'INC-1', 'dispatch result is returned')
   check(calls[0].requesterSessionId === 's1' && calls[0].task.symptom === '打不开', 'requester and task are forwarded')
+}
+
+// 管理员关掉协同：客服必须能独立继续，因此不抛错，而是返回一个明确的 disabled 结果
+{
+  const execute = mount({ isEnabled: () => false, dispatch: async () => { throw new Error('不该被调用') } })
+  const result = await execute({ symptom: '打不开' }, { agent: { session: { id: 's1' } } })
+  check(result.state === 'disabled', 'collaboration off returns a disabled result instead of throwing')
+  check(result.incidentId === '' && result.opsSessionId === '', 'disabled result carries no incident')
 }
 
 // 不是 agent 调用的

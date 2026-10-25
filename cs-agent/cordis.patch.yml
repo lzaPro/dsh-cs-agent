@@ -76,7 +76,7 @@
               write: false
               edit: false
           - id: knowledge-base
-            name: '@local/dsh-cs-agent'
+            name: '@local/dsh-kb/tools'
             config:
               role: customer-service
           - id: ocr
@@ -87,6 +87,12 @@
               # Linux/Windows：装 tesseract 后把 backend 改成 tesseract
           - id: ops-handoff
             name: '@local/dsh-cs-agent/handoff'
+          # 技能：宿主在 web-app 层关了 skill-filesystem / tool-skill，预设要自己挂。
+          # 客服只用默认根（~/.dsh/skills、~/.agents/skills），不挂内部运维 runbook。
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
           - id: compaction
             name: cordis:group
             group: true

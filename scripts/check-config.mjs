@@ -15,7 +15,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const problems = []
 const EXPECTED_ROWS = {
   'cs-agent/cordis.patch.yml': ['channel-gateway', 'preset-service-desk'],
-  'cs-ops/cordis.patch.yml': ['ops-dispatch', 'preset-ops'],
+  'kb-core/cordis.patch.yml': ['kb-store'],
+  'ops-agent/cordis.patch.yml': ['ops-dispatch', 'ops-panel', 'ops-panel-ui', 'preset-ops'],
 }
 
 /** 按 `    - id: <id>` 切出行块。 */
@@ -64,7 +65,8 @@ function expect(file, row, needle, present = true) {
 }
 
 const agent = 'cs-agent/cordis.patch.yml'
-const ops = 'cs-ops/cordis.patch.yml'
+const ops = 'ops-agent/cordis.patch.yml'
+const kb = 'kb-core/cordis.patch.yml'
 
 expect(agent, 'channel-gateway', 'route: /channel')
 expect(agent, 'channel-gateway', 'agentPreset: service-desk')
@@ -81,8 +83,24 @@ for (const [file, rows] of Object.entries(patches)) {
     }
   }
 }
-expect(ops, 'preset-ops', "name: '@deepseek-ai/dsh-tool-bash'")
+// 运维预设必须挂共享知识库（role: ops）和本包的只读集群工具
+expect(ops, 'preset-ops', "name: '@local/dsh-kb/tools'")
 expect(ops, 'preset-ops', 'role: ops')
+expect(ops, 'preset-ops', "name: '@local/dsh-ops-agent/cluster'")
+expect(ops, 'preset-ops', "name: '@local/dsh-ops-agent/task-tools'")
+// 拿掉 bash：否则 ops_k8s 的只读白名单和审批都能被绕过
+expect(ops, 'preset-ops', "name: '@deepseek-ai/dsh-tool-bash'", false)
+expect(ops, 'preset-ops', 'tool-fs', true)
+expect(kb, 'kb-store', "name: '@local/dsh-kb'")
+// 浏览器侧只认裸包名行：写成子路径，面板在 Web 里就静默消失（2026-10-24 踩过）。
+expect(ops, 'ops-panel-ui', "name: '@local/dsh-ops-agent'")
+expect(ops, 'ops-panel', 'route: /ops')
+// 技能：宿主在 web-app 层关了 skill-filesystem/tool-skill，两个预设都必须自己挂。
+expect(ops, 'preset-ops', "name: '@deepseek-ai/dsh-skill-filesystem'")
+expect(ops, 'preset-ops', "name: '@deepseek-ai/dsh-tool-skill'")
+expect(agent, 'preset-service-desk', "name: '@deepseek-ai/dsh-skill-filesystem'")
+expect(agent, 'preset-service-desk', "name: '@deepseek-ai/dsh-tool-skill'")
+expect(ops, 'ops-dispatch', "name: '@local/dsh-ops-agent/dispatcher'")
 
 const totalRows = Object.values(patches).reduce((sum, map) => sum + map.size, 0)
 if (problems.length === 0) console.log(`PASS ${totalRows} rows across ${Object.keys(patches).length} patches`)

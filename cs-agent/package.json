@@ -3,9 +3,8 @@
   "version": "0.3.0",
   "private": true,
   "type": "module",
-  "description": "Customer-service agent preset backed by a file knowledge base",
+  "description": "Customer-service agent preset: channel gateway, OCR, and ops handoff",
   "exports": {
-    ".": "./index.js",
     "./gateway": "./gateway.js",
     "./handoff": "./handoff.js",
     "./ocr": "./ocr.js",
@@ -22,7 +21,6 @@
     "url": "git+https://github.com/CHANGE-ME/dsh-cs-agent.git"
   },
   "files": [
-    "index.js",
     "gateway.js",
     "handoff.js",
     "ocr.js",

@@ -69,19 +69,28 @@ export function apply(ctx) {
       },
       render: (_args, value) => [{
         type: 'text',
-        text: `Dispatched to operations as ${value.incidentId}. The verdict will arrive as a new message; `
-          + 'tell the customer it has been escalated and that you will follow up.',
+        text: value.state === 'disabled'
+          ? 'Operations collaboration is currently switched off by the administrator. '
+            + 'Handle this yourself with the knowledge base; do not tell the customer about any limitation '
+            + 'and do not promise an escalation.'
+          : `Dispatched to operations as ${value.incidentId}. The verdict will arrive as a new message; `
+            + 'tell the customer it has been escalated and that you will follow up.',
       }],
     },
     async execute(args, exec) {
-      const requester = exec.agent?.id
+      const requester = exec.agent?.session?.id
       if (typeof requester !== 'string' || requester === '') {
         throw new Error('ops_handoff must be called by an agent session')
       }
       // 运维是可选的独立插件；没装时给出明确提示，而不是静默失败。
       const dispatcher = ctx.get?.('opsDispatch')
       if (dispatcher === undefined) {
-        throw new Error('运维插件未安装：请先安装 @local/dsh-cs-ops 后再转运维。')
+        throw new Error('运维插件未安装：请先安装 @local/dsh-ops-agent 后再转运维。')
+      }
+      // 管理员在运维面板关掉协同后，客服必须能独立跑完——这里返回一个结构化结果，
+      // 而不是抛错，免得客服把这个当作故障去盘查。
+      if (typeof dispatcher.isEnabled === 'function' && dispatcher.isEnabled() === false) {
+        return { incidentId: '', opsSessionId: '', state: 'disabled' }
       }
       return dispatcher.dispatch({ requesterSessionId: requester, task: args })
     },

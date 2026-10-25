@@ -1,6 +1,8 @@
 # 客服 Agent（cs-agent）
 
-一个 DSH bundle：一个「客服」预设 + 一个文件知识库插件 + 一个渠道网关。装进 profile 后，新建任务时可以在预设菜单里选「客服」。
+一个 DSH bundle：一个「客服」预设 + 一个渠道网关 + OCR + 转运维工具。装进 profile 后，新建任务时可以在预设菜单里选「客服」。
+
+知识库不在这个包里：条目和检索工具在 `@local/dsh-kb`（客服与运维共用一套数据，按 `audience` 门控）。
 
 ## 组成
 
@@ -8,10 +10,10 @@
 cs-agent/
   package.json         bundle 声明，指向 cordis.patch.yml
   cordis.patch.yml     渠道网关 + 客服预设
-  index.js             kb_search / kb_get / kb_propose 三个工具
   gateway.js           外部渠道 → 会话路由 → 回复回推
-  smoke.mjs            知识库自测
+  handoff.js           ops_handoff：把工单交给运维插件
   gateway-smoke.mjs    网关自测（含 apply 的注册检查）
+  handoff-smoke.mjs    转运维自测
 kb/                    知识库数据（和工作区同级，不在 bundle 里）
 channel/               会话映射和 outbox（运行时生成）
 docs/channel-contract.md   适配器契约
@@ -60,12 +62,12 @@ curl 'http://127.0.0.1:3080/channel/outbox?limit=5'
 
 ## 运维是可选的独立插件
 
-`ops_handoff` 工具在客服包里，但调度器在 `@local/dsh-cs-ops` 里。
+`ops_handoff` 工具在客服包里，但调度器和运维预设都在 `@local/dsh-ops-agent` 里。
 
-- 装了 `cs-ops`：转运维可用，多一个「运维」工作区
-- 没装：客服一切正常，调用 `ops_handoff` 会报「运维插件未安装：请先安装 @local/dsh-cs-ops」
+- 装了 `ops-agent`：转运维可用，多一个「运维」工作区和一个运维控制台
+- 没装：客服一切正常，调用 `ops_handoff` 会报「运维插件未安装：请先安装 @local/dsh-ops-agent」
 
-两个包可以分别安装和升级。详见 [cs-ops/README.md](../cs-ops/README.md)。
+两个包可以分别安装和升级。详见 [ops-agent/README.md](../ops-agent/README.md)。
 
 ## 控制台里的「客服」页
 

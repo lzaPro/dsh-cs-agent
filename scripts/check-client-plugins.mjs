@@ -74,8 +74,19 @@ for (const manifestPath of await findPackages(root)) {
         localProblems.push(`${pkg.name}: client registers id "${registered}" but the package is "${pkg.name}"`)
       }
     }
-    if (!(await fs.access(path.join(dir, pkg?.dsh?.bundle?.patch ?? 'cordis.patch.yml')).then(() => true, () => false))) {
+    const patchFile = path.join(dir, pkg?.dsh?.bundle?.patch ?? 'cordis.patch.yml')
+    const hasPatch = await fs.access(patchFile).then(() => true, () => false)
+    if (!hasPatch) {
       localProblems.push(`${pkg.name}: dsh.bundle.patch file is missing`)
+    } else {
+      // 浏览器侧只认「Loader 行名 == 包名」的入口（client-modules/src/client/manifest.ts 的
+      // exactPackageSpecifier）。如果 patch 里只有 @scope/pkg/xxx 这样的子路径行，
+      // client.js 永远不会被加载，UI 在 Web 里静默消失——2026-10-24 运维面板就是这样不见的。
+      const patchSource = await fs.readFile(patchFile, 'utf8')
+      const bare = new RegExp(`name:\\s*['"]?${pkg.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]?\\s*$`, 'm')
+      if (!bare.test(patchSource)) {
+        localProblems.push(`${pkg.name}: patch has no Loader row named exactly "${pkg.name}" (client.js is only scanned for bare package rows)`)
+      }
     }
   }
 

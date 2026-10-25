@@ -12,11 +12,23 @@ node scripts/check-client-runtime.mjs
 echo '== config placement'
 node scripts/check-config.mjs
 
+echo '== plugin apply'
+node scripts/check-plugin-apply.mjs
+
 echo '== panel script'
 node scripts/check-panel.mjs
 
-echo '== knowledge base'
-(cd cs-agent && node smoke.mjs)
+echo '== ops client render'
+node scripts/check-ops-client-render.mjs
+
+echo '== shared knowledge base'
+(cd kb-core && node smoke.mjs)
+
+echo '== rag units'
+(cd kb-core && node rag-smoke.mjs)
+
+echo '== rag retrieval quality'
+node scripts/eval-rag.mjs --strict
 
 echo '== gateway'
 (cd cs-agent && node gateway-smoke.mjs)
@@ -24,8 +36,8 @@ echo '== gateway'
 echo '== handoff'
 (cd cs-agent && node handoff-smoke.mjs)
 
-echo '== ops orchestrator'
-(cd cs-ops && node orchestrator-smoke.mjs)
+echo '== ops agent'
+(cd ops-agent && node smoke.mjs)
 
 echo '== ocr'
 (cd cs-agent && node ocr-smoke.mjs)
@@ -38,6 +50,9 @@ echo '== qq'
 
 echo '== kb import'
 (cd scripts && node kb-import-smoke.mjs)
+
+echo '== kb review'
+(cd scripts && node kb-review-smoke.mjs)
 
 echo '== runtime migration'
 (cd scripts && node move-runtime-smoke.mjs)
