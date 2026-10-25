@@ -172,7 +172,18 @@ function searchTool(ctx, role) {
         : result.verdict === 'reference'
           ? 'Related but not conclusive: present it as a possibility and say what still needs checking.'
           : 'No credible entry: ask the customer the clarify questions. Do not invent a fix.'
-      return { ...result, hint }
+      // Build the value field by field instead of spreading: the output schema is
+      // closed (`additionalProperties: false`), so one extra field from the store
+      // would make the host reject the whole tool result.
+      return {
+        verdict: result.verdict,
+        confidence: result.confidence,
+        hits: result.hits,
+        total: result.total,
+        margin: result.margin,
+        clarify: result.clarify,
+        hint: result.note === undefined ? hint : `${result.note} ${hint}`,
+      }
     },
   }
 }

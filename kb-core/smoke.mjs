@@ -90,8 +90,11 @@ for (const [label, query, expected] of cases) {
     `top=${result.hits[0]?.id ?? 'none'} score=${result.hits[0]?.score ?? 0}`)
 }
 
-const filtered = await cs.get('kb_search').execute({ query: '余额', service: 'grafana' })
-check(filtered.total === 0, 'service filter')
+// A filter that matches nothing must not look like "the knowledge base is empty":
+// the model guessed the service name, so retrieval retries unfiltered and says so.
+const filtered = await cs.get('kb_search').execute({ query: '余额', service: 'zzz-not-a-service' })
+check(filtered.total > 0 && /ignore that filter/.test(filtered.hint ?? ''), 'service filter retries unfiltered',
+  `total=${filtered.total} hint=${filtered.hint ?? 'none'}`)
 
 const hidden = await cs.get('kb_get').execute({ id: 'pvc-disk-full' })
 check(hidden.internalHidden === true && hidden.entry.resolution === undefined,

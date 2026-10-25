@@ -129,7 +129,20 @@ export function createKbStore(config) {
       const entries = await searchableFor(role)
       const filtered = filterEntries(entries, { service, environment })
       const occurrences = await ledger.occurrences()
-      const result = await retrieve(filtered, query, {
+      // A service/environment filter that matches nothing must not be reported as
+      // "the knowledge base has nothing": the model guessed the service name and
+      // the entry uses another one. Retry unfiltered, and say so in the note.
+      let pool = filtered
+      let note
+      if (pool.length === 0 && entries.length > 0) {
+        pool = entries
+        const filters = [
+          service === undefined || service === '' ? undefined : `service=${service}`,
+          environment === undefined || environment === '' ? undefined : `environment=${environment}`,
+        ].filter(Boolean).join(' ')
+        note = `No entry carries ${filters}; the results below ignore that filter.`
+      }
+      const result = await retrieve(pool, query, {
         index,
         limit,
         tuning,
@@ -160,7 +173,8 @@ export function createKbStore(config) {
         verdict: result.verdict,
         confidence: result.confidence,
         margin: result.margin,
-        clarify: result.verdict === 'miss' ? missingDetail(query) : [],
+        clarify: result.verdict === 'miss' ? missingDetail(query, role) : [],
+        note,
       }
     },
 
@@ -428,18 +442,34 @@ function findDuplicate(signatures, pool) {
 }
 
 /**
- * Pick the questions that are still missing from a customer's report.
+ * Pick the questions that are still missing from a report.
  *
  * The list is deterministic and short on purpose: a miss must produce concrete
- * questions, not an invitation to guess.
+ * questions, not an invitation to guess. It is also role-aware, because the two
+ * roles talk to different people: asking a customer "生产环境还是测试环境" or
+ * "影响所有用户还是个别账号" is nonsense, while asking them for the exact
+ * error text, the account, and the time is exactly what support needs.
  *
  * @param {string} query - raw query text.
+ * @param {string} role - `customer-service` or `ops`.
  * @returns {string[]} up to three questions.
  */
-function missingDetail(query) {
+function missingDetail(query, role) {
   const text = query.toLowerCase()
   const questions = []
   const hasError = /[a-z][a-z0-9_]{2,}|\b\d{3,5}\b|报错|错误|失败|异常|超时|报[0-9]/.test(text)
+
+  if (role === 'customer-service') {
+    if (!hasError) questions.push('具体提示的是什么？把屏幕上的原文或截图发我看看。')
+    if (!/@|邮箱|手机号|账号|工号|用户名/.test(text)) {
+      questions.push('方便说下你登录用的手机号或邮箱吗？我核对一下是哪个账号。')
+    }
+    if (!/刚才|今天|昨天|早上|下午|晚上|\d+\s*(点|时|分钟|小时)|\d{1,2}:\d{2}/.test(text)) {
+      questions.push('大概什么时候开始的？现在还会出现吗？')
+    }
+    return questions.slice(0, 3)
+  }
+
   if (!hasError) questions.push('报错的原文或错误码是什么？可以直接截图发我。')
   if (!/生产|线上|测试|预发|灰度|prod|staging|test/.test(text)) {
     questions.push('是在生产环境还是测试环境？')

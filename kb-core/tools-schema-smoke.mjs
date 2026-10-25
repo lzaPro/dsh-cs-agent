@@ -198,6 +198,22 @@ await test('kb_search miss output also satisfies the schema', async () => {
   assert.ok(output.clarify.length > 0)
 })
 
+await test('clarify questions for a customer never use internal wording', async () => {
+  const output = await executeAndValidate('kb_search', { query: '打印机连不上' })
+  const joined = output.clarify.join(' ')
+  for (const jargon of ['生产环境', '测试环境', '影响范围', '所有用户']) {
+    assert.ok(!joined.includes(jargon), `customer-service clarify must not ask "${jargon}": ${joined}`)
+  }
+  assert.ok(/截图|原文|提示/.test(joined), `clarify should ask for the exact error text: ${joined}`)
+})
+
+await test('a service filter that matches nothing is reported, not silently ignored', async () => {
+  const output = await executeAndValidate('kb_search', { query: 'disk quota exceed', service: 'billing' })
+  assert.match(output.hint, /ignore that filter/, 'hint must say the filter was ignored')
+  assert.match(output.hint, /service=billing/)
+  assert.ok(output.hits.length > 0, 'the unfiltered retry must still return the entry')
+})
+
 await test('kb_get output satisfies its declared schema', async () => {
   const found = await executeAndValidate('kb_get', { id: 'schema-disk-full' })
   assert.equal(found.found, true)
