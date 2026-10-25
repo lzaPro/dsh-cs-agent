@@ -34,17 +34,12 @@ const LEAKS = [
   ['URL', /https?:\/\//u],
 ]
 
-const keyOf = id => `qq:eval-${runId}-${id}`
-
-if (args.includes('--report')) {
-  const saved = JSON.parse(readFileSync(join(root, 'eval/last-run.json'), 'utf8'))
-  report(saved.rows)
-  process.exit(0)
-}
-
 console.log(`running ${cases.length} cases (run ${runId})`)
 
 // 1. 派发
+// 用网关返回的 key 收款，而不是自己拼：key 的拼法属于网关（`<channel>:<senderId>`），
+// 脚本自己推导过一次就再也不会跟着改，结果 12 条全部「未作答」而回复其实都在。
+const expected = new Map()
 for (const item of cases) {
   const response = await fetch(`${base}/channel`, {
     method: 'POST',
@@ -57,9 +52,25 @@ for (const item of cases) {
     }),
     signal: AbortSignal.timeout(10_000),
   })
-  if (response.status !== 202) {
-    console.error(`  ${item.id}: HTTP ${response.status} ${await response.text()}`)
+  const body = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    console.error(`  ${item.id}: HTTP ${response.status} ${JSON.stringify(body)}`)
+    continue
   }
+  if (typeof body.key !== 'string') {
+    console.error(`  ${item.id}: response carried no key: ${JSON.stringify(body)}`)
+    continue
+  }
+  expected.set(body.key, item.id)
+}
+if (expected.size !== cases.length) {
+  console.error(`dispatched ${expected.size}/${cases.length} cases`)
+}
+
+if (args.includes('--report')) {
+  const saved = JSON.parse(readFileSync(join(root, 'eval/last-run.json'), 'utf8'))
+  report(saved.rows)
+  process.exit(0)
 }
 
 // 2. 收集回复
@@ -71,8 +82,9 @@ while (Date.now() < deadline && replies.size < cases.length) {
     const response = await fetch(`${base}/channel/outbox?limit=200`, { signal: AbortSignal.timeout(5000) })
     const body = await response.json()
     for (const message of body.messages ?? []) {
-      if (!message.key.startsWith(`qq:eval-${runId}-`)) continue
-      replies.set(message.key, message.text)
+      const id = expected.get(message.key)
+      if (id === undefined) continue
+      replies.set(id, message.text)
     }
   } catch {
     // 下一轮再试
@@ -83,7 +95,7 @@ console.log('')
 
 // 3. 输出
 const rows = cases.map((item) => {
-  const text = replies.get(keyOf(item.id)) ?? ''
+  const text = replies.get(item.id) ?? ''
   return {
     id: item.id,
     question: item.text,
@@ -106,11 +118,11 @@ for (const row of rows) {
 
 // 4. 清理评测会话（保留会话会让侧边栏堆满测试记录）
 if (!args.includes('--keep')) {
-  for (const item of cases) {
+  for (const key of expected.keys()) {
     await fetch(`${base}/channel/reset`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ key: keyOf(item.id) }),
+      body: JSON.stringify({ key }),
       signal: AbortSignal.timeout(5000),
     }).catch(() => {})
   }
