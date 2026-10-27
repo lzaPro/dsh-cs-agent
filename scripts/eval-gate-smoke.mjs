@@ -17,8 +17,48 @@ import { fileURLToPath } from 'node:url'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const workspace = path.resolve(here, '..')
-const kbDir = path.join(workspace, 'kb')
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'eval-gate-smoke-'))
+
+// 自带的迷你知识库：门禁自检不该依赖部署那份 kb/。
+// 发布出去的插件仓库没有 kb/（部署数据，含真实客服话术），门禁自检又必须能在那里跑，
+// 所以这里造两条最小可用条目，而不是去读 ../kb。
+const kbDir = path.join(temp, 'kb')
+await fs.mkdir(kbDir, { recursive: true })
+const FIXTURES = {
+  'bad-request-400': {
+    id: 'bad-request-400',
+    title: '400 Bad Request：配置或参数错误',
+    status: 'verified',
+    audience: 'ops',
+    errorSignatures: ['400 Bad Request', 'invalid request', 'model not found'],
+    services: ['sophclaw'],
+    environments: ['production'],
+    symptom: '客户发送消息返回 400。',
+    customerReply: '这是请求参数不合法导致的，请检查模型名与账号配置。',
+    rootCause: '模型名或参数不合法。',
+    resolution: '核对模型名与参数后重试。',
+    tags: ['400'],
+    updated: '2026-01-01',
+  },
+  'pvc-disk-full': {
+    id: 'pvc-disk-full',
+    title: 'PVC 已满：-122 报错 / disk quota exceed',
+    status: 'verified',
+    audience: 'ops',
+    errorSignatures: ['-122', 'disk quota exceed', 'Unknown system error -122', 'EDQUOT', 'No space left on device'],
+    services: ['sophclaw'],
+    environments: ['production'],
+    symptom: '客户发送消息返回 -122，容器日志显示 disk quota exceed。',
+    customerReply: '这是我们这边存储配额的问题，正在处理。',
+    rootCause: 'PVC 配额用尽。',
+    resolution: '扩容 PVC 或清理日志后重启。',
+    tags: ['-122', 'disk'],
+    updated: '2026-01-01',
+  },
+}
+for (const [name, entry] of Object.entries(FIXTURES)) {
+  await fs.writeFile(path.join(kbDir, `${name}.json`), `${JSON.stringify(entry, undefined, 2)}\n`)
+}
 
 let passed = 0
 let failed = 0
@@ -48,7 +88,9 @@ function check(ok, label, detail) {
  */
 function gate(args) {
   return new Promise(resolve => {
-    execFile(process.execPath, [path.join(here, 'eval-gate.mjs'), ...args], { cwd: workspace }, (error, stdout, stderr) => {
+    // 除非调用方显式给了 --kb，否则一律用自带的迷你知识库。
+    const full = args.includes('--kb') ? args : [...args, '--kb', kbDir]
+    execFile(process.execPath, [path.join(here, 'eval-gate.mjs'), ...full], { cwd: workspace }, (error, stdout, stderr) => {
       // out 合并两路方便断言"错误里说了什么"；stdout 单独留着解析 JSON——
       // node 自己会往 stderr 打实验特性警告，混进来就不是合法 JSON 了。
       resolve({ code: error?.code ?? 0, out: `${stdout}${stderr}`, stdout })
@@ -93,8 +135,11 @@ const brokenKb = path.join(temp, 'kb-broken')
 await fs.cp(kbDir, brokenKb, { recursive: true })
 const brokenEntry = path.join(brokenKb, 'bad-request-400.json')
 const entry = JSON.parse(await fs.readFile(brokenEntry, 'utf8'))
+// 把 400 的痕迹从这条目里彻底抹掉，它就不该再被"报错 -400"命中。
 entry.errorSignatures = []
 entry.title = '请求异常'
+entry.symptom = '客户无法使用。'
+entry.tags = []
 await fs.writeFile(brokenEntry, `${JSON.stringify(entry, undefined, 2)}\n`)
 
 const regressed = await gate(['--cases', casesFile, '--baseline', baselineFile, '--kb', brokenKb])
