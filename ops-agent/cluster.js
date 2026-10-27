@@ -13,6 +13,7 @@ import { execFile } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { describeScope, effectiveContexts, effectiveNamespaces } from './scope.js'
 
 /** Cordis function-plugin name. */
 export const name = 'ops-cluster-tools'
@@ -39,7 +40,14 @@ const DEFAULT_LOG_LINES = 300
  * @param config - `kubeconfig`, `kubectlPath`, `namespaces`, `logLineLimit`, `kubectlTimeoutMs`.
  */
 export function apply(ctx, config) {
-  const cluster = createCluster(config)
+  // 作用域从派单器来：它知道这张工单是哪个客户的。这里每次调用都重新问一次，
+  // 因为预设可能先于派单器挂载，apply 时机还拿不到 opsDispatch。
+  // 会话 id 由工具执行时传进来——一个工单一个运维会话，绑定就成立。
+  const scopeOf = sessionId => {
+    if (typeof sessionId !== 'string' || sessionId === '') return undefined
+    return ctx.get?.('opsDispatch')?.scopeFor?.(sessionId)
+  }
+  const cluster = createCluster(config, { scopeOf })
   ctx.tools.register(envTool(cluster))
   ctx.tools.register(k8sTool(cluster))
   ctx.tools.register(logsTool(cluster))
@@ -51,7 +59,7 @@ export function apply(ctx, config) {
  * @param config - deployment configuration.
  * @returns accessor with `env`, `k8s`, and `logs`.
  */
-export function createCluster(config) {
+export function createCluster(config, options = {}) {
   const kubectlPath = typeof config?.kubectlPath === 'string' && config.kubectlPath !== ''
     ? config.kubectlPath
     : 'kubectl'
@@ -66,6 +74,29 @@ export function createCluster(config) {
   const defaultContext = typeof config?.context === 'string' && config.context.trim() !== '' ? config.context.trim() : ''
   const logLineLimit = clampNumber(config?.logLineLimit, 50, 2000, DEFAULT_LOG_LINES)
   const timeoutMs = clampNumber(config?.kubectlTimeoutMs, 1000, 120_000, DEFAULT_TIMEOUT_MS)
+  const scopeOf = typeof options.scopeOf === 'function' ? options.scopeOf : () => undefined
+
+  /** 这个会话对应的作用域；没配账号表时返回 undefined，行为与重构前一致。 */
+  function scopeFor(sessionId) {
+    return scopeOf(sessionId)
+  }
+
+  /** 作用域本身不合法（未绑定/未知账号）时，取证一律拒绝。 */
+  function assertScoped(scope) {
+    if (scope === undefined || scope.configured !== true) return
+    if (scope.unbound === true) {
+      throw new Error(
+        'ops_k8s: 这张工单没有账号信息，无法确定该看哪台机器；'
+        + '让客服在 ops_handoff 里补 account 后再取证，不要在全集群范围内猜',
+      )
+    }
+    if (scope.unknown === true) {
+      throw new Error(
+        `ops_k8s: 账号「${scope.account}」不在账号映射表里（config.accounts），拒绝取证；`
+        + '让管理员补这个账号的命名空间，或让客服核对账号',
+      )
+    }
+  }
 
   /** Run kubectl with an argument vector; never a shell. */
   async function run(args, options = {}) {
@@ -95,8 +126,10 @@ export function createCluster(config) {
   }
 
   /** Self-check: everything the agent needs before it trusts a "no evidence" answer. */
-  async function env() {
+  async function env(scope) {
     const checks = []
+    const view = effectiveNamespaces(namespaces, scope)
+    const viewContexts = effectiveContexts(contexts, scope)
     let kubeconfigOk = false
     try {
       const stat = await fs.stat(kubeconfig)
@@ -146,42 +179,64 @@ export function createCluster(config) {
     return {
       ok: operational,
       checks,
-      namespaces: allowAllNamespaces ? ['*'] : namespaces,
-      contexts: contexts.length > 0 ? contexts : available,
+      namespaces: view.allowAll ? ['*'] : view.namespaces,
+      contexts: viewContexts.length > 0 ? viewContexts : available,
       context: defaultContext,
       readOnly: true,
       logLineLimit,
-      hints: operational
-        ? ['只读通道可用。用 `context` 参数切换集群；先取证，再下结论。']
-        : ['只读通道不可用：不要编造集群状态，把缺失项写进收尾 JSON 的 evidence 与 need_from_customer，或直接 needs_human。'],
+      account: scope?.configured === true ? scope.account ?? '' : '',
+      scope: describeScope(scope),
+      hints: scopedHint(scope, operational),
     }
   }
 
-  /** Validate a namespace against the allowlist. */
-  function checkNamespace(namespace) {
-    if (namespace === undefined || namespace === '') return undefined
-    if (allowAllNamespaces) return namespace
-    if (namespaces.length === 0) {
-      throw new Error('ops_k8s: 未配置命名空间白名单（config.namespaces），拒绝访问；先让管理员在插件配置里加白名单')
+  /** Validate a namespace against the global allowlist and the account scope. */
+  function checkNamespace(namespace, scope) {
+    assertScoped(scope)
+    const view = effectiveNamespaces(namespaces, scope)
+    if (namespace === undefined || namespace === '') {
+      // 不写命名空间时 kubectl 会默认 -A（全集群）。有账号作用域还敢扫全集群，
+      // 就是"名字没写对导致越权"的经典形态，直接拒绝并要求写明。
+      if (scope?.configured === true) {
+        throw new Error(
+          'ops_k8s: 这张工单绑定了账号作用域，必须显式写 namespace；不写会退化成扫全集群，拒绝执行',
+        )
+      }
+      return undefined
     }
-    if (!namespaces.includes(namespace)) {
-      throw new Error(`ops_k8s: 命名空间 ${namespace} 不在白名单内（允许：${namespaces.join(', ')}）`)
+    if (view.allowAll) return namespace
+    if (view.namespaces.length === 0) {
+      throw new Error(
+        scope?.configured === true
+          ? 'ops_k8s: 该账号没有可用命名空间（账号表与全局白名单取交集后为空），拒绝访问；先让管理员确认配置'
+          : 'ops_k8s: 未配置命名空间白名单（config.namespaces），拒绝访问；先让管理员在插件配置里加白名单',
+      )
+    }
+    if (!view.namespaces.includes(namespace)) {
+      throw new Error(
+        `ops_k8s: 命名空间 ${namespace} 不在白名单内（允许：${view.namespaces.join(', ')}）`
+        + (scope?.configured === true ? `；本工单账号：${describeScope(scope)}` : ''),
+      )
     }
     return namespace
   }
 
-  /** Validate a requested context against the allowlist, and normalize it. */
-  function checkContext(requested) {
+  /** Validate a requested context against the allowlist and the account scope. */
+  function checkContext(requested, scope) {
     const wanted = typeof requested === 'string' && requested.trim() !== '' ? requested.trim() : defaultContext
     if (wanted === '') return ''
-    if (contexts.length > 0 && !contexts.includes(wanted)) {
-      throw new Error(`ops_k8s: context ${wanted} 不在白名单内（允许：${contexts.join(', ')}）`)
+    const view = effectiveContexts(contexts, scope)
+    if (view.length > 0 && !view.includes(wanted)) {
+      throw new Error(
+        `ops_k8s: context ${wanted} 不在白名单内（允许：${view.join(', ')}）`
+        + (scope?.configured === true ? `；本工单账号：${describeScope(scope)}` : ''),
+      )
     }
     return wanted
   }
 
   /** Run one read-only kubectl call and return a capped, redacted transcript. */
-  async function k8s(args) {
+  async function k8s(args, scope) {
     const verb = requireText(args?.verb, 'verb').toLowerCase()
     if (!READ_VERBS.has(verb)) {
       throw new Error(`ops_k8s: 动词 ${verb} 不是只读动词（允许：${[...READ_VERBS].join(', ')}）`)
@@ -190,8 +245,8 @@ export function createCluster(config) {
     if (FORBIDDEN_RESOURCES.has(resource)) {
       throw new Error('ops_k8s: 禁止读取 secrets；需要密钥由管理员处理')
     }
-    const namespace = checkNamespace(typeof args?.namespace === 'string' ? args.namespace.trim() : undefined)
-    const context = checkContext(args?.context)
+    const namespace = checkNamespace(typeof args?.namespace === 'string' ? args.namespace.trim() : undefined, scope)
+    const context = checkContext(args?.context, scope)
     const name = typeof args?.name === 'string' ? args.name.trim() : ''
 
     const argv = []
@@ -231,11 +286,11 @@ export function createCluster(config) {
   }
 
   /** Read logs for one pod or workload selector. */
-  async function logs(args) {
+  async function logs(args, scope) {
     const namespace = requireText(args?.namespace, 'namespace')
-    checkNamespace(namespace)
+    checkNamespace(namespace, scope)
     const pod = requireText(args?.pod, 'pod')
-    const context = checkContext(args?.context)
+    const context = checkContext(args?.context, scope)
     const tail = clampNumber(args?.tailLines, 1, logLineLimit, DEFAULT_LOG_LINES)
     const argv = ['logs', pod, '-n', namespace, `--tail=${tail}`]
     if (typeof args?.container === 'string' && args.container.trim() !== '') argv.push('-c', args.container.trim())
@@ -273,7 +328,53 @@ export function createCluster(config) {
     }
   }
 
-  return { env, k8s, logs, kubeconfig, kubectlPath, namespaces, run }
+  return { env, k8s, logs, kubeconfig, kubectlPath, namespaces, run, scopeFor }
+}
+
+/**
+ * 给 `ops_env` 的提示语加上作用域信息。
+ *
+ * 光说"只读通道可用"不够：模型要同时知道"这台工单只允许看哪个账号"，
+ * 否则它会自己去试隔壁的命名空间，然后被拒绝一次、浪费一轮。
+ *
+ * @param scope - 作用域。
+ * @param operational - 通道是否可用。
+ * @returns {string[]} 提示语。
+ */
+function scopedHint(scope, operational) {
+  const base = operational
+    ? ['只读通道可用。用 `context` 参数切换集群；先取证，再下结论。']
+    : ['只读通道不可用：不要编造集群状态，把缺失项写进收尾 JSON 的 evidence 与 need_from_customer，或直接 needs_human。']
+  if (scope === undefined || scope.configured !== true) return base
+  if (scope.unbound === true || scope.unknown === true) {
+    return [
+      `账号作用域：${describeScope(scope)}。`,
+      '在账号信息补齐之前，`ops_k8s`/`ops_logs` 会被拒绝——这不是故障，不要绕过、不要猜命名空间；'
+      + '把缺口写进 evidence，判 `needs_human` 或 `need_info`。',
+    ]
+  }
+  const namespaces = Array.isArray(scope.namespaces) ? scope.namespaces.join(', ') : '未额外限制'
+  return [
+    ...base,
+    `本工单账号：${scope.account}。取证时必须显式写 namespace，且只能用该账号的：${namespaces}。`,
+  ]
+}
+
+/**
+ * 从工具执行上下文里取出这张工单的作用域。
+ *
+ * 一个工单一个运维会话，所以会话 id 就等价于"这张工单"；派单器按这个 id 记了账号。
+ * 取不到时返回 undefined（不做限制），与重构前行为一致——单独用 cluster 工具、
+ * 或者运维 agent 在会话外被调用时都不会因此坏掉。
+ *
+ * @param cluster - `createCluster()` 的返回值。
+ * @param exec - 工具执行上下文。
+ * @returns {object|undefined} 作用域。
+ */
+function sessionScope(cluster, exec) {
+  const sessionId = exec?.agent?.session?.id
+  if (typeof sessionId !== 'string' || sessionId === '') return undefined
+  return cluster.scopeFor(sessionId)
 }
 
 /** `ops_env` definition. */
@@ -305,9 +406,11 @@ function envTool(cluster) {
           context: { type: 'string' },
           readOnly: { type: 'boolean' },
           logLineLimit: { type: 'integer' },
+          account: { type: 'string', description: 'Empty when the incident is not bound to an account.' },
+          scope: { type: 'string', description: 'Human-readable account scope, e.g. "acme（命名空间：acme-prod）".' },
           hints: { type: 'array', items: { type: 'string' } },
         },
-        required: ['ok', 'checks', 'namespaces', 'contexts', 'context', 'readOnly', 'logLineLimit', 'hints'],
+        required: ['ok', 'checks', 'namespaces', 'contexts', 'context', 'readOnly', 'logLineLimit', 'account', 'scope', 'hints'],
       },
       render: (_args, value) => [{
         type: 'text',
@@ -315,13 +418,14 @@ function envTool(cluster) {
           `access: ${value.ok ? 'OK' : 'NOT USABLE'}`,
           ...value.checks.map(check => `- ${check.ok ? 'ok' : 'FAIL'} ${check.name}: ${check.detail}`),
           `namespaces: ${value.namespaces.join(', ') || '(none)'} · read-only: ${value.readOnly}`,
+          `account scope: ${value.scope}`,
           value.contexts.length === 0 ? '' : `contexts: ${value.contexts.join(', ')}${value.context === '' ? '' : ` · active: ${value.context}`}`,
           ...value.hints.map(hint => `> ${hint}`),
         ].join('\n'),
       }],
     },
-    async execute() {
-      return cluster.env()
+    async execute(_args, exec) {
+      return cluster.env(sessionScope(cluster, exec))
     },
   }
 }
@@ -373,8 +477,8 @@ function k8sTool(cluster) {
           + (value.truncated ? '\n… 输出已截断' : ''),
       }],
     },
-    async execute(args) {
-      return cluster.k8s(args)
+    async execute(args, exec) {
+      return cluster.k8s(args, sessionScope(cluster, exec))
     },
   }
 }
@@ -425,8 +529,8 @@ function logsTool(cluster) {
           + (value.truncated ? '\n… 已按行数上限截断' : ''),
       }],
     },
-    async execute(args) {
-      return cluster.logs(args)
+    async execute(args, exec) {
+      return cluster.logs(args, sessionScope(cluster, exec))
     },
   }
 }

@@ -10,6 +10,14 @@
  *   node scripts/retention.mjs --yes           # 执行
  *   node scripts/retention.mjs --group-archive 3 --group-purge 30 \
  *                              --private-archive 30 --private-purge 90
+ *
+ * 注意分工：这个脚本动的是**运行时**的会话目录（`<dsh>/sessions/<id>`）与
+ * workspace.json，只在 json 存储 + 单机部署下成立。
+ *
+ * 业务数据（conversations / messages / usage_daily 三张表）由网关的
+ * `GET|POST {route}/retention` 负责 —— 那套逻辑两种存储都认，并且每次删除都写审计。
+ * 用 `DSH_CS_STORE=postgres` 部署时，会话目录可以交给这个脚本，业务数据必须走网关，
+ * 否则表里会留下已经"删掉"的客户数据。
  */
 import { existsSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync, copyFileSync } from 'node:fs'
 import { join } from 'node:path'

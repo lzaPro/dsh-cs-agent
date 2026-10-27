@@ -17,6 +17,8 @@ node scripts/check-plugin-apply.mjs
 
 echo '== panel script'
 node scripts/check-panel.mjs
+echo '== panel view'
+node cs-agent/panel-dom-smoke.mjs
 
 echo '== ops client render'
 node scripts/check-ops-client-render.mjs
@@ -33,14 +35,55 @@ echo '== tool output schemas'
 echo '== rag retrieval quality'
 node scripts/eval-rag.mjs --strict
 
+echo '== retrieval gate'
+node scripts/eval-gate.mjs
+
+echo '== gate self-test'
+node scripts/eval-gate-smoke.mjs
+
 echo '== gateway'
 (cd cs-agent && node gateway-smoke.mjs)
+
+echo '== session store'
+node cs-agent/store-smoke.mjs
+
+echo '== reply delivery'
+node cs-agent/outbox-smoke.mjs
+
+echo '== write lease'
+node cs-agent/lease-smoke.mjs
+
+echo '== inbound accept'
+node cs-agent/inbox-smoke.mjs
+echo '== health'
+node cs-agent/health-smoke.mjs
+
+echo '== alerts'
+node cs-agent/alerts-smoke.mjs
+
+echo '== access control'
+node cs-agent/auth-smoke.mjs
+echo '== lease guard'
+node cs-agent/lease-guard-smoke.mjs
+echo '== message archive'
+node cs-agent/message-smoke.mjs
+echo '== usage and cost'
+node cs-agent/usage-smoke.mjs
+echo '== dead letters'
+node cs-agent/dead-smoke.mjs
+echo '== retention'
+node cs-agent/purge-smoke.mjs
+echo '== retention auto'
+node cs-agent/retention-auto-smoke.mjs
 
 echo '== handoff'
 (cd cs-agent && node handoff-smoke.mjs)
 
 echo '== ops agent'
 (cd ops-agent && node smoke.mjs)
+
+echo '== account scope'
+node ops-agent/scope-smoke.mjs
 
 echo '== ocr'
 (cd cs-agent && node ocr-smoke.mjs)
@@ -65,5 +108,19 @@ echo '== retention'
 
 echo '== installer'
 node scripts/setup-smoke.mjs
+
+# 发布包自检：npm pack 会发出去什么。凭证、漏掉的模块、坏的 exports 都在这里现形。
+echo '== packaging'
+node scripts/packaging-smoke.mjs
+
+# 端到端安装：从空目录按 INSTALL 装一遍，再让真插件收一条消息、回一条、重启后还认得那个客户。
+# 前面两步只证明"文件到位""apply() 不抛"，这一步证明"装完真能用"。
+echo '== install e2e'
+node scripts/install-e2e-smoke.mjs
+
+# 数据库是可选的：没设 DSH_DB 时这个测试自己会打印 SKIP 并返回 0，
+# 所以不开数据库的部署仍然是一条命令跑完全部检查。
+echo '== database'
+node cs-agent/db-smoke.mjs
 
 echo 'all checks passed'

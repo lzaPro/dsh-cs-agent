@@ -1,0 +1,6 @@
+.env
+.env.*
+*smoke*.mjs
+*.token
+*.key
+*.pem

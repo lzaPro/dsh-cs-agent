@@ -14,13 +14,24 @@
  */
 
 import { promises as fs } from 'node:fs'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { execFile } from 'node:child_process'
-import { homedir } from 'node:os'
 import { zstdDecompressSync } from 'node:zlib'
 import { promisify } from 'node:util'
 import { randomUUID } from 'node:crypto'
 import { defaultPaths } from './paths.js'
+import { createStore, storeKind } from './store.js'
+import { DEFAULT_RETRY, createOutbox } from './outbox.js'
+import { createInbox, inboxKey } from './inbox.js'
+import { auditFileFor, createAudit } from './audit.js'
+import { describePlan, planPurgeByOwner, planRetention, resolveRetentionAuto, retentionLimits } from './retention.js'
+import { panelHtml } from './panel.js'
+import { createAuth } from './auth.js'
+import { createAlerter, parseAlertConfig } from './alerts.js'
+import { costMicros, formatCost, parsePricing, priceFor, pricingReady } from './pricing.js'
+import { newTraceId, tracePrefix, withTrace } from './trace.js'
+import { acquireLease, createFileLease, leaseKind } from './lease.js'
+import { dbHealth } from './db/pool.mjs'
 import path from 'node:path'
 
 const runCommand = promisify(execFile)
@@ -62,42 +73,7 @@ const FALLBACK_REPLY = '抱歉，我这边刚才没处理成功，能再说一�
  * @returns 释放锁的函数。
  */
 export function acquireDataLock(dataFile) {
-  const lockPath = `${dataFile}.lock`
-  mkdirSync(path.dirname(lockPath), { recursive: true })
-  const take = () => {
-    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }))
-    return () => rmSync(lockPath, { force: true })
-  }
-  try {
-    writeFileSync(lockPath, JSON.stringify({ pid: process.pid, at: new Date().toISOString() }), { flag: 'wx' })
-    return () => rmSync(lockPath, { force: true })
-  } catch (error) {
-    if (error?.code !== 'EEXIST') throw error
-  }
-  let holder = {}
-  try {
-    holder = JSON.parse(readFileSync(lockPath, 'utf8'))
-  } catch {
-    holder = {}
-  }
-  if (Number.isSafeInteger(holder.pid) && isAlive(holder.pid)) {
-    throw new Error(
-      `channel-gateway: data dir already in use by pid ${holder.pid} (${lockPath}); `
-      + 'use a separate dataFile for each dsh instance',
-    )
-  }
-  // 上一个进程崩了，接管它的锁。
-  return take()
-}
-
-/** 进程是否还活着。 */
-function isAlive(pid) {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
+  return createFileLease(dataFile).release
 }
 
 /** 解析会话映射文件：apply() 抢锁与 createGateway() 必须用同一个值。 */
@@ -107,17 +83,42 @@ function resolveDataFile(config) {
 
 /**
  * Register the gateway on the host's HTTP server.
+ *
+ * 写入域租约按存储类型选：JSON 用 `<dataFile>.lock`（同步、单机、与重构前一致），
+ * 数据库用 `gateway_leases` 租约（异步、多机有效、崩溃后自动接管）。JSON 分支
+ * 保持同步返回，所以既有测试里"直接调用 apply 然后立刻断言"的写法不受影响。
+ *
  * @param ctx - host context carrying the web server and agent services.
  * @param config - deployment configuration for routing and reply delivery.
  */
 export function apply(ctx, config) {
+  const kind = storeKind({ store: config?.store })
+  if (leaseKind(kind) === 'postgres') return applyWithLease(ctx, config)
   // 两个 dsh 进程共用同一个数据目录会互相覆盖会话映射，启动即拦下。
-  const release = acquireDataLock(resolveDataFile(config))
+  const lease = createFileLease(resolveDataFile(config))
+  return install(ctx, config, lease)
+}
+
+/** 数据库模式：租约是异步的，所以整个 apply 返回 Promise（Cordis 会 await）。 */
+async function applyWithLease(ctx, config) {
+  const lease = await acquireLease({
+    storeKind: 'postgres',
+    dataFile: resolveDataFile(config),
+    scope: config?.leaseScope,
+    ttlMs: config?.leaseTtlMs,
+    heartbeatMs: config?.leaseHeartbeatMs,
+    logger: ctx.logger,
+  })
+  return install(ctx, config, lease)
+}
+
+/** 握有租约之后装配网关：注册路由、事件观察者和投递重试。 */
+function install(ctx, config, lease) {
   let gateway
   try {
-    gateway = createGateway(ctx, config)
+    gateway = createGateway(ctx, config, { lease })
   } catch (error) {
-    release()
+    void lease.release()
     throw error
   }
   const disposer = ctx.webServer.register({
@@ -126,11 +127,27 @@ export function apply(ctx, config) {
     handler: (req, res) => gateway.handleHttp(req, res),
   })
   ctx.effect(() => disposer, 'channel-gateway: route')
-  ctx.effect(() => () => release(), 'channel-gateway: data lock')
+  ctx.effect(() => () => lease.release(), 'channel-gateway: write lease')
   ctx.effect(() => {
     const off = ctx.on('session/event', (session, event) => gateway.observe(session, event))
     return typeof off === 'function' ? off : undefined
   }, 'channel-gateway: observe')
+  // 回复重试的后台扫描：适配器抖动时按退避重发，进程退出时停表。
+  ctx.effect(() => {
+    gateway.startOutboxWorker()
+    return () => gateway.stopOutboxWorker()
+  }, 'channel-gateway: outbox worker')
+  // 保留期自动跑：卸载时一定要停掉，否则插件重载会叠出第二个定时器。
+  ctx.effect(() => {
+    gateway.startRetentionWorker()
+    return () => gateway.stopRetentionWorker()
+  }, 'channel-gateway: retention worker')
+  // 告警自检：没人配 webhook 也照样跑（状态留在 /alerts），配了就会推出去。
+  ctx.effect(() => {
+    gateway.startAlertWorker()
+    return () => gateway.stopAlertWorker()
+  }, 'channel-gateway: alert worker')
+  return gateway
 }
 
 /**
@@ -138,7 +155,9 @@ export function apply(ctx, config) {
  * @param ctx - context exposing agents, presets, the web server, and events.
  * @param config - validated deployment configuration.
  */
-export function createGateway(ctx, config) {
+export function createGateway(ctx, config, options = {}) {
+  const lease = options.lease
+  const startedAt = Date.now()
   const route = requirePath(config?.route)
   // 私聊和群聊各用一个独立目录，避免会话混进用户的工作区。
   const paths = defaultPaths()
@@ -154,9 +173,47 @@ export function createGateway(ctx, config) {
   const outboxFile = config?.outbox === undefined
     ? path.join(paths.data, 'outbox.jsonl')
     : requireAbsolute(config.outbox, 'outbox')
+  /**
+   * 写入门禁。
+   *
+   * 租约被别的实例接管后（本机卡住、被运维重启、或者只是网络抖动让对方抢到了），
+   * 继续写就是两个实例同时改一份状态 —— 这种损坏比"停一会儿"严重得多。
+   * 所以一旦丢锁就拒绝所有写入，并且用明确的错误而不是静默丢。
+   */
+  function assertWritable() {
+    if (lease?.lost === true) {
+      const error = new Error(
+        `channel-gateway: write refused, the write lease was taken over (${lease.kind ?? 'unknown'}); this instance must stop and restart`,
+      )
+      error.code = 'LEASE_LOST'
+      throw error
+    }
+  }
+
+  /**
+   * 带追踪前缀的告警输出。
+   * traceId 挂在 AsyncLocalStorage 上，所以处理链里的日志自动能按 traceId 串起来，
+   * 不需要把 id 一路当参数传。
+   */
+  const warn = text => ctx.logger?.warn?.(`${tracePrefix()}${text}`)
+
   const replyWebhook = config?.replyWebhook === undefined ? undefined : requireUrl(config.replyWebhook)
   const forward = config?.forward === 'all' ? 'all' : 'final'
-  const token = typeof config?.token === 'string' && config.token !== '' ? config.token : undefined
+  // 访问控制：public（/health）/ inbound（POST {route}）/ viewer（读）/ admin（写）。
+  // 没配令牌时保持重构前的全开行为，但会警告一次——见 cs-agent/auth.js 的注释。
+  const auth = createAuth({
+    token: config?.token,
+    tokenFile: config?.tokenFile,
+    inboundToken: config?.inboundToken,
+    inboundTokenFile: config?.inboundTokenFile,
+    viewerToken: config?.viewerToken,
+    viewerTokenFile: config?.viewerTokenFile,
+    healthPublic: config?.healthPublic,
+    cookieName: config?.cookieName,
+    viewerCookieName: config?.viewerCookieName,
+    cookieSeconds: config?.cookieSeconds,
+    logger: ctx.logger,
+  })
   const maxPerMinute = positiveInteger(config?.maxPerMinute, DEFAULT_MAX_PER_MINUTE)
   const maxAttachments = positiveInteger(config?.maxAttachments, 4)
   const maxAttachmentBytes = positiveInteger(config?.maxAttachmentBytes, DEFAULT_MAX_ATTACHMENT_BYTES)
@@ -185,51 +242,102 @@ export function createGateway(ctx, config) {
     ? paths.sessions
     : requireAbsolute(config.sessionsRoot, 'sessionsRoot')
 
-  /** key -> one session record; loaded lazily and rewritten on change. */
-  const sessions = new Map()
+  // 会话状态和去重窗口交给 store：默认还是原来那个 JSON 文件，设
+  // DSH_CS_STORE=postgres 才换成数据库。网关仍然直接拿这两个 Map 的引用就地
+  // 改记录，store 只负责"变化怎么落地"。
+  const store = createStore({
+    kind: storeKind({ store: config?.store }),
+    dataFile,
+    seenFile,
+    dedupeLimit,
+    logger: ctx.logger,
+  })
+  // 投递队列：只有配了回复 webhook 才需要"重发"这回事。没有 webhook 时
+  // （本地评测、只写审计的场景）emit 的行为与重构前完全一致，不引入任何状态。
+  const retry = { ...DEFAULT_RETRY, ...(config?.outboxRetry ?? {}) }
+  const outbox = replyWebhook === undefined
+    ? undefined
+    : createOutbox({
+        kind: store.kind === 'postgres' ? 'postgres' : 'json',
+        file: outboxFile,
+        retry,
+        logger: ctx.logger,
+      })
+  // 入站队列：客户消息先落这里再处理。附件下载、建会话都可能失败，失败后消息
+  // 不能丢——平台不一定会重投。入站不受 replyWebhook 影响，永远启用。
+  const inbox = createInbox({
+    kind: store.kind === 'postgres' ? 'postgres' : 'json',
+    file: `${dataFile.replace(/\.json$/, '')}-inbox.json`,
+    retry: { ...DEFAULT_RETRY, ...(config?.inboxRetry ?? {}) },
+    logger: ctx.logger,
+  })
+  // 审计：人工重放、数据清理这类"谁干的"要能回答的操作。
+  const audit = createAudit({
+    kind: store.kind === 'postgres' ? 'postgres' : 'json',
+    file: auditFileFor(dataFile),
+    logger: ctx.logger,
+  })
+  // 价格表：只在"要算钱"的时候需要。没配就是全 0，报表里会明说没配，
+  // 而不是显示一堆 $0.00 让人以为算过了。
+  const pricing = parsePricing(config?.pricing)
+  // 保留期自动跑：默认关着，删数据这件事要人明确同意一次。
+  const retentionAuto = resolveRetentionAuto(config?.retentionAuto)
+  // 告警：/health 能查不等于有人会看。配了 webhook 和收件人才会推出去；
+  // 缺一个就整条链关闭（发错人比不发危险），但状态照样留在 /alerts 里。
+  const alerts = createAlerter({
+    config: parseAlertConfig(config),
+    logger: ctx.logger,
+    route,
+  })
+  /** key -> one session record; 内容是 store.records 的引用。 */
+  const sessions = store.records
   /** platform message id -> received-at ISO string, bounded FIFO. */
-  const seen = new Map()
+  const seen = store.seen
   /** key -> in-flight creation, so two simultaneous messages share one session. */
   const creating = new Map()
   /** sessionId -> key, for routing assistant messages back out. */
   const bySession = new Map()
   /** sessionId -> assistant text buffered for the current turn. */
   const pending = new Map()
+  // 一轮之内累计的 token 用量：assistant/message 事件逐条带 usage，turn/end 时一次性记账。
+  const pendingUsage = new Map()
+  // 在飞的归档写入。归档是旁路（不 await），但测试和优雅关闭需要能等它们落完。
+  const pendingArchives = new Set()
+  // 在飞的回复投递。observe 是事件回调，不能阻塞模型回合，但关停时要能等它们落定。
+  const pendingReplies = new Set()
   /** sessionId -> 本轮触发者，用于群聊自动 @。 */
   const turnSender = new Map()
   /** key -> recent message timestamps, in-memory only. */
   const rate = new Map()
+  // key -> 最近一条入站消息的 traceId。只在内存里：进程重启后旧的会话没有追踪 id，
+  // 这不影响功能，只是重启前那条消息的回复会缺 traceId。
+  const traceByKey = new Map()
   let loaded = false
 
   async function load() {
     if (loaded) return
+    // 必须先 await 再置标志：原来先置 loaded = true，两条消息同时进来时
+    // 后一条会看到空表，于是给同一个客户建出两个会话。
+    await store.load()
+    for (const [key, record] of sessions) bySession.set(record.sessionId, key)
     loaded = true
-    const records = await readJsonFile(dataFile)
-    for (const [key, record] of Object.entries(records ?? {})) {
-      if (typeof record?.sessionId === 'string') {
-        sessions.set(key, record)
-        bySession.set(record.sessionId, key)
-      }
-    }
-    const ids = await readJsonFile(seenFile)
-    if (Array.isArray(ids)) {
-      for (const entry of ids) {
-        if (Array.isArray(entry) && typeof entry[0] === 'string') seen.set(entry[0], String(entry[1] ?? ''))
-      }
-    }
   }
 
-  async function persist() {
-    await writeJsonFile(dataFile, Object.fromEntries(sessions))
+  /**
+   * 持久化。带参只写这一条，不带参写全部（兼容旧调用点）。
+   */
+  async function persist(record) {
+    assertWritable()
+    if (record === undefined) {
+      for (const value of sessions.values()) await store.save(value)
+      return
+    }
+    await store.save(record)
   }
 
-  /** Persist the dedupe window, dropping the oldest ids past the configured bound. */
-  async function persistSeen() {
-    while (seen.size > dedupeLimit) {
-      const oldest = seen.keys().next().value
-      seen.delete(oldest)
-    }
-    await writeJsonFile(seenFile, [...seen.entries()])
+  /** 记一条入站去重并把窗口裁到上限。 */
+  async function persistSeen(messageId, at) {
+    await store.rememberSeen(messageId, at ?? new Date().toISOString())
   }
 
   /** 从所有工作区摘掉一个会话。 */
@@ -240,7 +348,7 @@ export function createGateway(ctx, config) {
       try {
         await workspace.detachSession(sessionId)
       } catch (error) {
-        ctx.logger?.warn?.(`channel-gateway: detach failed: ${error.message}`)
+        warn(`channel-gateway: detach failed: ${error.message}`)
       }
     }
   }
@@ -257,12 +365,13 @@ export function createGateway(ctx, config) {
       delete record.archivedAt
       await attachWorkspace(record.sessionId, { channel: record.channel, groupId: record.groupId ?? undefined })
     }
-    await persist()
+    await persist(record)
     return { key, archived: record.archivedAt !== undefined }
   }
 
   /** 彻底删除：会话文件、映射、工作区引用。 */
   async function deleteConversation(key) {
+    assertWritable()
     await load()
     const record = sessions.get(key)
     if (record === undefined) throw new Error(`unknown conversation key: ${key}`)
@@ -281,7 +390,7 @@ export function createGateway(ctx, config) {
     }
     // 文件不在这里删：DSH 可能还持有这个会话的引用，删文件会让它显示 ENOENT。
     // 真正的清除交给 scripts/retention.mjs（那时映射已经不存在了）。
-    await persist()
+    await store.remove(key)
     return { key, deleted: true, detached }
   }
 
@@ -366,13 +475,13 @@ export function createGateway(ctx, config) {
     const record = sessions.get(key)
     if (record === undefined || title === undefined || record.title === title) return
     record.title = title
-    await persist()
+    await persist(record)
     const agent = ctx.agents.get(record.sessionId)
     if (agent !== undefined) {
       try {
         ctx.sessionTitle?.rename?.(agent.session, title)
       } catch (error) {
-        ctx.logger?.warn?.(`channel-gateway: title rename failed: ${error.message}`)
+        warn(`channel-gateway: title rename failed: ${error.message}`)
       }
     }
   }
@@ -387,7 +496,7 @@ export function createGateway(ctx, config) {
       await attached.setTitle('客服')
       await attached.attachSession(sessionId)
     } catch (error) {
-      ctx.logger?.warn?.(`channel-gateway: workspace attach failed: ${error.message}`)
+      warn(`channel-gateway: workspace attach failed: ${error.message}`)
     }
   }
 
@@ -397,7 +506,7 @@ export function createGateway(ctx, config) {
     if (existing !== undefined) {
       if (existing.archivedAt !== undefined) {
         delete existing.archivedAt
-        await persist()
+        await persist(existing)
         await attachWorkspace(existing.sessionId, payload)
       }
       const live = ctx.agents.get(existing.sessionId)
@@ -407,13 +516,13 @@ export function createGateway(ctx, config) {
         return resumed.agent
       } catch (error) {
         // 会话文件可能已经被清理掉：丢掉坏映射，重建一个，而不是让整个会话报错。
-        ctx.logger?.warn?.(
+        warn(
           `channel-gateway: cannot resume ${existing.sessionId}, starting fresh: ${error.message}`,
         )
         sessions.delete(key)
         bySession.delete(existing.sessionId)
         pending.delete(existing.sessionId)
-        await persist()
+        await store.remove(key)
       }
     }
     const inFlight = creating.get(key)
@@ -456,7 +565,7 @@ export function createGateway(ctx, config) {
       }
       sessions.set(key, record)
       bySession.set(sessionId, key)
-      await persist()
+      await persist(record)
       return handle.agent
     })()
 
@@ -518,22 +627,94 @@ export function createGateway(ctx, config) {
     return { blocks: [], notes }
   }
 
-  /** Deliver one inbound message. */
+  /** 会话 key：私聊按人，群聊按群（或群内按人）。 */
+  function keyFor(message) {
+    if (message.groupId === undefined) return `${message.channel}:${message.senderId}`
+    return groupScope === 'sender'
+      ? `${message.channel}:${message.groupId}:${message.senderId}`
+      : `${message.channel}:group:${message.groupId}`
+  }
+
+  /**
+   * 受理一条入站消息。
+   *
+   * 顺序是"先收下，再处理"：校验/去重/限流之后立刻把消息落进队列，落进去就算
+   * 受理成功；然后在这个请求里试一次处理，成功就照旧同步返回，失败则留给后台
+   * 按退避重试。这样附件下载失败、建会话超时都不会让客户消息凭空消失。
+   */
   async function inbound(payload) {
     await load()
     const message = normalizeInbound(payload, maxAttachments)
-    const key = message.groupId === undefined
-      ? `${message.channel}:${message.senderId}`
-      : groupScope === 'sender'
-        ? `${message.channel}:${message.groupId}:${message.senderId}`
-        : `${message.channel}:group:${message.groupId}`
+    const key = keyFor(message)
+    // 每条入站消息一个追踪 id：日志、审计行、模型消息、回复信封里都是同一个，
+    // 客户说"刚才那条没回"时能一路查下去。
+    const traceId = newTraceId()
+    return withTrace(traceId, () => acceptInbound(message, key, traceId))
+  }
+
+  async function acceptInbound(message, key, traceId) {
+    // 先登记：即使这条消息因为重复被短路掉，之后这条会话的回复也该带上它的 traceId。
+    traceByKey.set(key, traceId)
 
     if (message.messageId !== undefined && seen.has(message.messageId)) {
-      return { key, duplicate: true, sessionId: sessions.get(key)?.sessionId ?? null }
+      return { key, duplicate: true, traceId, sessionId: sessions.get(key)?.sessionId ?? null }
     }
     checkRate(key)
 
-    const { blocks: imageBlocks, notes: imageNotes } = await admitImages(message.attachments)
+    assertWritable()
+    // 入队即受理。幂等键让平台重投不会排两次。
+    const envelope = {
+      key,
+      channel: message.channel,
+      at: new Date().toISOString(),
+      messageId: message.messageId,
+      // 幂等键只由消息身份决定：错在这里会让平台重投变成两条队列记录。
+      idempotencyKey: inboxKey(message, { dedupeByContent: config?.dedupeByContent !== false }),
+      traceId,
+      message,
+    }
+    const { record: queued, duplicate } = await inbox.enqueue(envelope, { notBefore: inbox.retry.graceMs })
+    if (duplicate && queued.state === 'sent') {
+      return { key, duplicate: true, traceId, sessionId: sessions.get(key)?.sessionId ?? null }
+    }
+    // 去重窗口在受理时就记下：之后平台重投会被上面那道判断挡掉，而队列里的那份
+    // 仍会被后台重试，不会两边都处理。
+    if (message.messageId !== undefined) await persistSeen(message.messageId)
+
+    const outcome = await processInbound(queued)
+    if (outcome.ok) {
+      return { key, duplicate: false, traceId, ...outcome.value }
+    }
+    warn(`channel-gateway: inbound accepted but not handled yet: ${outcome.error.message}`)
+    return {
+      key,
+      duplicate: false,
+      traceId,
+      accepted: true,
+      queued: outcome.state !== 'dead',
+      error: outcome.error.message,
+      attempts: outcome.attempts,
+    }
+  }
+
+  /**
+   * 把队列里的一条真正投给模型。成功标 sent，失败标 failed（或 dead）。
+   * 幂等性说明：`agent.followup` 之后、`markSent` 之前崩溃会导致重试时再喂一遍，
+   * 属于 at-least-once；这个窗口只有一次函数返回的时间，比"整条消息丢掉"划算。
+   */
+  async function processInbound(item) {
+    const message = item.payload.message
+    const key = item.payload.key
+    // 首投在 inbound 的 trace 上下文里；后台重试走 drainInbox，那里没有上下文，
+    // 所以以信封里的 traceId 为准重建，日志才能接着上一次的 id。
+    const traceId = item.payload.traceId
+    if (traceId !== undefined) traceByKey.set(key, traceId)
+    return traceId === undefined ? runProcessInbound(item, message, key) : withTrace(traceId, () => runProcessInbound(item, message, key))
+  }
+
+  async function runProcessInbound(item, message, key) {
+    try {
+      const { blocks: imageBlocks, notes: imageNotes } = await admitImages(message.attachments)
     const agent = await ensureSession(key, message, titleFor(message, key))
     const record = sessions.get(key)
     if (record !== undefined) {
@@ -541,7 +722,7 @@ export function createGateway(ctx, config) {
       record.lastSenderId = message.senderId
       if (message.groupName !== undefined) record.groupName = message.groupName
       if (message.senderName !== undefined) record.senderName = message.senderName
-      await persist()
+      await persist(record)
       if (record.label === null && message.groupName !== undefined) {
         await renameSession(key, titleFor({
           channel: record.channel,
@@ -571,6 +752,7 @@ export function createGateway(ctx, config) {
         ...(message.senderName === undefined ? {} : { senderName: message.senderName }),
         ...(message.groupId === undefined ? {} : { groupId: message.groupId }),
         ...(message.messageId === undefined ? {} : { messageId: message.messageId }),
+        ...(traceByKey.get(key) === undefined ? {} : { traceId: traceByKey.get(key) }),
         form: 'notice',
         summary: `${message.channel} message from ${message.senderId}`,
       },
@@ -578,23 +760,498 @@ export function createGateway(ctx, config) {
     // 人工接管中：只把客户消息写进会话给管理员看，不唤醒模型。
     if (record?.mode === 'human') {
       agent.inject?.(userMessage)
-      if (message.messageId !== undefined) {
-        seen.set(message.messageId, new Date().toISOString())
-        await persistSeen()
-      }
-      return { key, duplicate: false, held: true, sessionId: agent.id }
+      // 归档放在交付之后：先保证消息到了 agent 那里，再记历史。
+      await archiveMessage(key, {
+        role: 'user',
+        content: `${speaker}${message.text}`,
+        ...(message.messageId === undefined ? {} : { platformMsgId: message.messageId }),
+        ...(traceByKey.get(key) === undefined ? {} : { traceId: traceByKey.get(key) }),
+      })
+      await inbox.markSent(item.idempotencyKey)
+      return { ok: true, value: { held: true, sessionId: agent.id } }
     }
     agent.followup(userMessage)
-    if (message.messageId !== undefined) {
-      seen.set(message.messageId, new Date().toISOString())
-      await persistSeen()
+    await archiveMessage(key, {
+      role: 'user',
+      content: `${speaker}${message.text}`,
+      ...(message.messageId === undefined ? {} : { platformMsgId: message.messageId }),
+      ...(traceByKey.get(key) === undefined ? {} : { traceId: traceByKey.get(key) }),
+    })
+    await inbox.markSent(item.idempotencyKey)
+    return { ok: true, value: { sessionId: agent.id } }
+    } catch (error) {
+      const failed = await inbox.markFailed(item.idempotencyKey, error.message)
+      return { ok: false, error, state: failed?.state, attempts: failed?.attempts }
     }
-    return { key, duplicate: false, sessionId: agent.id }
+  }
+
+  /**
+   * 处理队列里到期的一批。首投失败的消息靠这里重试，退避用与投递队列同一套参数。
+   */
+  async function drainInbox(limit = 20) {
+    await inbox.load()
+    const batch = await inbox.claim(limit)
+    let processed = 0
+    let failed = 0
+    for (const item of batch) {
+      const outcome = await processInbound(item)
+      if (outcome.ok) {
+        processed += 1
+      } else {
+        warn(`channel-gateway: inbound retry failed: ${outcome.error.message}`)
+        failed += 1
+      }
+    }
+    return { claimed: batch.length, processed, failed }
+  }
+
+  /**
+   * 记一笔在飞的回复投递。
+   *
+   * emit 出错只告警（客户那条消息的处理不该因为回复发不出去而失败），
+   * 但 promise 要留着，关停和测试可以等它落定，避免"明明该发出去却还没发"。
+   */
+  function trackReply(promise) {
+    const tracked = promise
+      .catch(error => warn(`channel-gateway: reply not sent: ${error.message}`))
+      .finally(() => pendingReplies.delete(tracked))
+    pendingReplies.add(tracked)
+    return tracked
+  }
+
+  /** 按名字取队列。名字对不上返回 undefined，让调用方报 400 而不是 500。 */
+  function queueByName(name) {
+    if (name === 'inbox') return inbox
+    if (name === 'outbox') return outbox
+    return undefined
+  }
+
+  /**
+   * 人工重放死信。
+   *
+   * 只放回 dead/failed 的条目；sent 的不动（客户会看到两条一样的回复），
+   * sending 的也不动（那是别的进程手里的租约）。每一次重放都记审计 ——
+   * 这是"谁把发不出去的回复又推了一遍"，事后必须能查。
+   */
+  async function replayDead(queueName, idempotencyKeys, actor = 'panel') {
+    const queue = queueByName(queueName)
+    if (queue === undefined) {
+      const error = new Error(`unknown queue: ${queueName}`)
+      error.code = 'BAD_QUEUE'
+      throw error
+    }
+    assertWritable()
+    const keys = Array.isArray(idempotencyKeys) && idempotencyKeys.length > 0
+      ? idempotencyKeys
+      : (await queue.listDead(100)).map(record => record.idempotencyKey)
+    const replayed = []
+    const skipped = []
+    for (const key of keys) {
+      const record = await queue.replay(key)
+      if (record === undefined) {
+        skipped.push({ idempotencyKey: key, reason: 'not found' })
+        continue
+      }
+      if (record.replayed !== true) {
+        skipped.push({ idempotencyKey: key, reason: `state is ${record.state}` })
+        continue
+      }
+      replayed.push(key)
+      await audit.record({
+        actor,
+        role: 'operator',
+        action: 'replay',
+        targetType: queueName,
+        targetId: key,
+        detail: { attempts: record.attempts, externalKey: record.payload?.key ?? null },
+      })
+    }
+    return { queue: queueName, replayed, skipped }
+  }
+
+  /**
+   * 保留期检查。
+   *
+   * 默认只算不删（`dryRun: true`）—— 会删数据的东西不该在 curl 一发下去就生效，
+   * 必须先看一眼计划。真删要显式传 `dryRun: false`。
+   *
+   * 三个入口：
+   *   - 不给参数：按保留期算该归档/该清除的；
+   *   - `limits`：这一轮用临时保留期（不改配置）；
+   *   - `owner`（key / senderId / groupId）：按客户清除，用于"注销账号"这类要求。
+   */
+  async function runRetention(body = {}) {
+    await load()
+    const dryRun = body?.dryRun !== false
+    const limits = retentionLimits({ ...(config?.retention ?? {}), ...(body?.limits ?? {}) })
+    const records = [...sessions.values()]
+    if (body?.owner !== undefined && body.owner !== null) {
+      const targets = planPurgeByOwner(records, body.owner)
+      if (dryRun) return { dryRun, mode: 'owner', owner: body.owner, purge: targets, archive: [], limits }
+      assertWritable()
+      const purged = []
+      for (const item of targets) {
+        const record = sessions.get(item.key)
+        await store.purgeConversation(item.key)
+        if (record !== undefined) bySession.delete(record.sessionId)
+        purged.push(item.key)
+        await audit.record({
+          actor: body?.actor ?? 'panel',
+          role: 'operator',
+          action: 'purge',
+          targetType: 'conversation',
+          targetId: item.key,
+          detail: { reason: 'owner-request', owner: body.owner, scope: item.scope },
+        })
+      }
+      return { dryRun, mode: 'owner', owner: body.owner, purged, limits }
+    }
+
+    const plan = planRetention(records, { limits })
+    if (dryRun) return { dryRun, mode: 'retention', ...plan }
+    assertWritable()
+    const archived = []
+    for (const item of plan.archive) {
+      // 归档走现有入口：它同时负责把会话从工作区摘下来。
+      await setArchived(item.key, true)
+      archived.push(item.key)
+      await audit.record({
+        actor: body?.actor ?? 'panel',
+        role: 'system',
+        action: 'archive',
+        targetType: 'conversation',
+        targetId: item.key,
+        detail: { reason: 'retention', scope: item.scope, ageDays: item.ageDays },
+      })
+    }
+    const purged = []
+    for (const item of plan.purge) {
+      const record = sessions.get(item.key)
+      await store.purgeConversation(item.key)
+      if (record !== undefined) bySession.delete(record.sessionId)
+      purged.push(item.key)
+      await audit.record({
+        actor: body?.actor ?? 'panel',
+        role: 'system',
+        action: 'purge',
+        targetType: 'conversation',
+        targetId: item.key,
+        detail: { reason: 'retention', scope: item.scope, ageDays: item.ageDays, archivedAt: item.archivedAt ?? null },
+      })
+    }
+    // 归档和清除都动过会话表，落一次盘让内存和存储一致。
+    await store.flush()
+    return { dryRun, mode: 'retention', archived, purged, limits, summary: describePlan(plan) }
+  }
+
+  /**
+   * 归档一条消息。
+   *
+   * 存消息是旁路，不是主流程：磁盘满、库挂了都不该让客户的消息处理失败，
+   * 所以这里吞掉异常只记 warn。没归档成功会在日志里留下痕迹，但消息照发。
+   */
+  async function archiveMessage(key, message) {
+    try {
+      const saved = await store.saveMessage(key, message)
+      if (saved === false) warn(`channel-gateway: message archive skipped, no conversation row for ${key}`)
+    } catch (error) {
+      warn(`channel-gateway: message archive failed: ${error.message}`)
+    }
+  }
+
+  /** 记一轮的用量。同样是旁路，失败只告警。 */
+  async function archiveUsage(key, usage) {
+    try {
+      await store.bumpUsage(key, usage)
+    } catch (error) {
+      warn(`channel-gateway: usage archive failed: ${error.message}`)
+    }
+  }
+
+  /** 记下在飞的归档写入，好让 flushArchives() 等到它们落完。 */
+  function trackArchive(promise) {
+    pendingArchives.add(promise)
+    // archiveMessage/archiveUsage 自己吞了异常，这里只负责从集合里摘掉。
+    promise.then(() => pendingArchives.delete(promise), () => pendingArchives.delete(promise))
+    return promise
+  }
+
+  /** 等所有在飞的归档写完。优雅关闭与测试用；正常路径不等。 */
+  async function flushArchives() {
+    // 循环而非只等一次：等待期间事件回调可能又排进新的归档或回复。
+    while (pendingArchives.size > 0 || pendingReplies.size > 0) {
+      await Promise.all([...pendingArchives, ...pendingReplies])
+    }
+    await store.flush()
+  }
+
+  /** 读队列统计，库/文件有问题时不要让看病接口挂掉。 */
+  async function statSafely(queue) {
+    try {
+      return await queue.stats()
+    } catch (error) {
+      return { error: error.message }
+    }
+  }
+
+  /**
+   * 健康检查：给探针和运维看"这个网关现在能不能干活"。
+   *
+   * 只回答四件事：租约还在不在、队列读不读得出来、数据库通不通、有没有死信。
+   * 任何一项探测自己抛错都不能让端点挂掉 —— 探针拿到 500 只会让编排系统误判整机故障，
+   * 而真实原因往往只是数据库暂时连不上。
+   */
+  async function health() {
+    const checks = []
+    const leaseLost = lease?.lost === true
+    checks.push({
+      name: 'lease',
+      ok: !leaseLost,
+      detail: lease === undefined ? 'not attached' : `${lease.kind}${leaseLost ? ' (taken over)' : ''}`,
+    })
+
+    const inboxStats = await statSafely(inbox)
+    checks.push({
+      name: 'inbox',
+      ok: inboxStats.error === undefined,
+      detail: inboxStats.error ?? `${inboxStats.pending ?? 0} pending, ${inboxStats.dead ?? 0} dead`,
+    })
+
+    let outboxStats
+    if (outbox !== undefined) {
+      outboxStats = await statSafely(outbox)
+      checks.push({
+        name: 'outbox',
+        ok: outboxStats.error === undefined,
+        detail: outboxStats.error ?? `${outboxStats.pending ?? 0} pending, ${outboxStats.dead ?? 0} dead`,
+      })
+    }
+
+    let database
+    if (store.kind === 'postgres') {
+      try {
+        database = await dbHealth()
+      } catch (error) {
+        database = { enabled: true, ok: false, error: error.message }
+      }
+      checks.push({
+        name: 'database',
+        ok: database.ok === true,
+        detail: database.error ?? database.version ?? 'ok',
+      })
+    }
+
+    // 死信不算"不健康"：它们是处理过又放弃的，需要人看，但不代表网关挂了。
+    return {
+      ok: checks.every(item => item.ok),
+      uptimeMs: Date.now() - startedAt,
+      route,
+      store: { kind: store.kind },
+      lease: { kind: lease?.kind ?? null, lost: leaseLost },
+      retention: { ...retentionState },
+      alerts: alerts.status(),
+      queues: { inbox: inboxStats, outbox: outboxStats ?? null },
+      database: database ?? null,
+      checks,
+    }
+  }
+
+  /** POST one envelope to the adapter; throws on any failure so callers can retry. */
+  async function postReply(envelope) {
+    // fetch 的网络错误和 HTTP 错误都统一成 throw：上层只关心"这次没送达"，
+    // 重发还是标死由队列决定。
+    const response = await fetch(replyWebhook, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(envelope),
+    })
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}))
+      throw new Error(detail.error ?? `HTTP ${response.status}`)
+    }
+  }
+
+  /**
+   * Send the due replies once. Called inline by emit (first attempt) and by the
+   * background worker (retries). Each entry is claimed first, so two callers
+   * never send the same reply at the same time.
+   */
+  async function drainOutbox(limit = 20) {
+    if (outbox === undefined) return { claimed: 0, delivered: 0, failed: 0 }
+    await outbox.load()
+    const batch = await outbox.claim(limit)
+    let delivered = 0
+    let failed = 0
+    for (const item of batch) {
+      try {
+        await postReply(item.payload)
+        await outbox.markSent(item.idempotencyKey)
+        delivered += 1
+      } catch (error) {
+        warn(`channel-gateway: reply webhook failed: ${error.message}`)
+        await outbox.markFailed(item.idempotencyKey, error.message)
+        failed += 1
+      }
+    }
+    return { claimed: batch.length, delivered, failed }
+  }
+
+  let workerTimer
+  /** Start the background sweep for both queues. Timers are unref'd so a CLI run can still exit. */
+  function startWorker() {
+    if (workerTimer !== undefined) return false
+    const sweep = Math.min(retry.sweepMs, inbox.retry.sweepMs)
+    const tick = () => {
+      // 租约丢了就别再动了：继续重试只会往不属于自己的库里写。
+      if (lease?.lost === true) {
+        warn('channel-gateway: write lease lost; stopping the retry worker')
+        stopWorker()
+        return
+      }
+      // 两个队列各跑各的：一个挂了不能让另一个停摆。
+      if (outbox !== undefined) {
+        drainOutbox().catch(error => warn(`channel-gateway: outbox drain failed: ${error.message}`))
+      }
+      drainInbox().catch(error => warn(`channel-gateway: inbox drain failed: ${error.message}`))
+    }
+    workerTimer = setInterval(tick, sweep)
+    // unref: 否则只要进程里还有待重试的条目，测试和 CLI 就跑不完。
+    workerTimer.unref?.()
+    tick()
+    return true
+  }
+
+  function stopWorker() {
+    if (workerTimer === undefined) return false
+    clearInterval(workerTimer)
+    workerTimer = undefined
+    return true
+  }
+
+  // 保留期自动跑。状态放在闭包里，`/health` 直接读它 —— 判断"数据真的删了吗"
+  // 只需要看 `lastRunAt`，不用去翻日志。
+  const retentionState = {
+    enabled: retentionAuto.enabled,
+    everyMs: retentionAuto.everyMs,
+    dryRun: retentionAuto.dryRun,
+    running: false,
+    lastRunAt: undefined,
+    lastResult: undefined,
+    lastError: undefined,
+  }
+  let retentionTimer
+  let retentionStartTimer
+
+  /**
+   * 跑一次自动保留期清理。
+   *
+   * @param {string} [reason] - 触发原因，写进审计的 actor（`schedule:startup` / `schedule:tick`）。
+   * @returns {Promise<object>} 清理结果；失败时返回 `{ error }` 而不是抛。
+   */
+  async function runRetentionSweep(reason = 'tick') {
+    // 上一轮还没跑完（库慢、会话多）就跳过这一轮：两轮同时删同一批会话没有意义。
+    if (retentionState.running) return { skipped: 'busy' }
+    retentionState.running = true
+    try {
+      const result = await runRetention({ dryRun: retentionAuto.dryRun, actor: `schedule:${reason}` })
+      const archived = result.dryRun === true ? (result.archive ?? []).length : (result.archived ?? []).length
+      const purged = result.dryRun === true ? (result.purge ?? []).length : (result.purged ?? []).length
+      retentionState.lastRunAt = new Date().toISOString()
+      retentionState.lastResult = { dryRun: result.dryRun === true, archived, purged }
+      retentionState.lastError = undefined
+      if (archived + purged > 0) {
+        warn(
+          `channel-gateway: scheduled retention ${result.dryRun === true ? '(dry run) ' : ''}archived ${archived}, purged ${purged}`,
+        )
+      }
+      return result
+    } catch (error) {
+      // 租约被接管、库连不上都会走到这里。清理失败不该让网关挂掉，但要留下痕迹。
+      retentionState.lastRunAt = new Date().toISOString()
+      retentionState.lastError = error.message
+      warn(`channel-gateway: scheduled retention failed: ${error.message}`)
+      return { error: error.message }
+    } finally {
+      retentionState.running = false
+    }
+  }
+
+  /** 启动自动清理。默认配置下由 `install()` 自动调用。 */
+  function startRetentionWorker() {
+    if (retentionAuto.enabled !== true) return false
+    if (retentionTimer !== undefined || retentionStartTimer !== undefined) return false
+    const tick = () => {
+      // 租约丢了就别删：删的是别人的数据。
+      if (lease?.lost === true) {
+        warn('channel-gateway: write lease lost; stopping the retention worker')
+        stopRetentionWorker()
+        return
+      }
+      void runRetentionSweep()
+    }
+    retentionStartTimer = setTimeout(() => {
+      retentionStartTimer = undefined
+      tick()
+      retentionTimer = setInterval(tick, retentionAuto.everyMs)
+      // unref: 否则只要还有这个定时器，测试与 CLI 就跑不完。
+      retentionTimer.unref?.()
+    }, retentionAuto.initialDelayMs)
+    retentionStartTimer.unref?.()
+    return true
+  }
+
+  function stopRetentionWorker() {
+    const running = retentionTimer !== undefined || retentionStartTimer !== undefined
+    if (retentionTimer !== undefined) clearInterval(retentionTimer)
+    if (retentionStartTimer !== undefined) clearTimeout(retentionStartTimer)
+    retentionTimer = undefined
+    retentionStartTimer = undefined
+    return running
+  }
+
+  // 告警定时自检。跟队列 worker 分开：那个只在有待重试条目时才有意义，而这个
+  // 要回答"现在有没有问题"，跟有没有活儿无关。
+  let alertTimer
+  let alertStartedAt
+
+  /**
+   * 跑一轮告警自检：读一次 health，交给发送器判断该报什么。
+   *
+   * @param {object} [at] - 测试用：指定 `now`。
+   * @returns {Promise<object>} `{fired, recovered, active, text, sent}`。
+   */
+  async function checkAlerts(at = {}) {
+    const report = await health()
+    // 刚起来的那十几秒数据库/队列可能还在握手，先不报，避免重启即刷屏。
+    if (alertStartedAt !== undefined && Date.now() - alertStartedAt < alerts.config.graceMs) {
+      return { fired: 0, recovered: 0, active: alerts.active, text: '', sent: false, skipped: 'grace' }
+    }
+    return alerts.check(report, at)
+  }
+
+  /** 启动告警自检。`install()` 会调用；也可以在测试里手动 start/stop。 */
+  function startAlertWorker() {
+    if (alertTimer !== undefined) return false
+    alertStartedAt = Date.now()
+    alertTimer = setInterval(() => {
+      checkAlerts().catch(error => warn(`channel-gateway: alert check failed: ${error.message}`))
+    }, alerts.config.intervalMs)
+    // unref: 否则测试与 CLI 进程退不出去。
+    alertTimer.unref?.()
+    return true
+  }
+
+  function stopAlertWorker() {
+    if (alertTimer === undefined) return false
+    clearInterval(alertTimer)
+    alertTimer = undefined
+    return true
   }
 
   /** Forward one assistant message to the platform adapter. */
   async function emit(key, text, mention, route) {
     if (text.trim() === '') return
+    assertWritable()
     const record = route ?? sessions.get(key)
     const envelope = {
       key,
@@ -604,33 +1261,44 @@ export function createGateway(ctx, config) {
       text,
       ...(typeof mention === 'string' && mention !== '' ? { mention } : {}),
       at: new Date().toISOString(),
+      // 回复带上触发它的那条客户消息的 traceId，适配器侧日志能对上。
+      ...(traceByKey.get(key) === undefined ? {} : { traceId: traceByKey.get(key) }),
     }
     // The outbox is written even when a webhook is configured: it is the audit
     // trail, and a dead adapter must not silently swallow customer replies.
     if (outboxFile !== undefined) {
-      await fs.mkdir(path.dirname(outboxFile), { recursive: true })
-      await fs.appendFile(outboxFile, `${JSON.stringify(envelope)}\n`, 'utf8')
-    }
-    if (replyWebhook !== undefined) {
+      // 记账失败不能让回复发不出去：审计文件写不进去（磁盘满、目录不可写）
+      // 时降级成告警，投递路径照常走。丢的是可查性，不是客户的消息。
       try {
-        const response = await fetch(replyWebhook, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(envelope),
-        })
-        if (!response.ok) {
-          const detail = await response.json().catch(() => ({}))
-          ctx.logger?.warn?.(`channel-gateway: reply webhook returned ${response.status}`)
-          return { delivered: false, error: detail.error ?? `HTTP ${response.status}` }
-        }
-        return { delivered: true }
+        await fs.mkdir(path.dirname(outboxFile), { recursive: true })
+        await fs.appendFile(outboxFile, `${JSON.stringify(envelope)}\n`, 'utf8')
       } catch (error) {
-        ctx.logger?.warn?.(`channel-gateway: reply webhook failed: ${error.message}`)
-        return { delivered: false, error: error.message }
+        warn(`channel-gateway: reply audit write failed: ${error.message}`)
       }
     }
-    // 没有 webhook 时只写 outbox，视为已投递到本地。
-    return { delivered: true }
+    if (outbox === undefined) {
+      // 没有 webhook 时只写 outbox，视为已投递到本地。
+      return { delivered: true }
+    }
+    // 先入队再首发：即使这一轮进程立刻被杀，重启后也能把这条补发出去。
+    const { record: queued, duplicate } = await outbox.enqueue(envelope, { notBefore: retry.graceMs })
+    // 同一个幂等键已经发成功过：直接算送达，不再发第二遍。
+    if (duplicate && queued.state === 'sent') return { delivered: true, duplicate: true }
+    try {
+      await postReply(envelope)
+      await outbox.markSent(queued.idempotencyKey)
+      return { delivered: true }
+    } catch (error) {
+      warn(`channel-gateway: reply webhook failed: ${error.message}`)
+      const failed = await outbox.markFailed(queued.idempotencyKey, error.message)
+      // 首发送失败不等于丢：消息已在队列里，后台会按退避重发。
+      return {
+        delivered: false,
+        error: error.message,
+        queued: failed?.state !== 'dead',
+        attempts: failed?.attempts,
+      }
+    }
   }
 
   /**
@@ -645,14 +1313,58 @@ export function createGateway(ctx, config) {
     // 管理员在接管：模型的输出一律不外发，避免和人对抢。
     if (sessions.get(key)?.mode === 'human') {
       pending.delete(sessionId)
+      pendingUsage.delete(sessionId)
       return
     }
 
     if (event.type === 'assistant/message') {
       const text = textOf(event.data?.message?.content)
+      const usage = event.data?.usage
+      // 这一条是哪个模型答的。成本必须按片段算：一轮里可能换了模型
+      // （重试、降级都会换），用整轮总量乘一个单价是错的。
+      const source = event.data?.message?.source
+      const model = typeof source?.model === 'string' ? source.model : undefined
+      const provider = typeof source?.provider === 'string' ? source.provider : undefined
+      const fragmentCost = usage === undefined ? 0 : costMicros(usage, priceFor(pricing, model))
+      // 逐条合并这一轮的用量，等 turn/end 一次性记账。
+      if (usage !== undefined) {
+        const acc = pendingUsage.get(sessionId) ?? {
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          totalTokens: 0,
+          costMicros: 0,
+        }
+        acc.inputTokens += usage.inputTokens ?? 0
+        acc.outputTokens += usage.outputTokens ?? 0
+        acc.cacheReadTokens += usage.cacheReadTokens ?? 0
+        acc.cacheWriteTokens += usage.cacheWriteTokens ?? 0
+        acc.totalTokens += usage.totalTokens ?? 0
+        acc.costMicros += fragmentCost
+        pendingUsage.set(sessionId, acc)
+      }
       if (text === '') return
       if (forward === 'all') {
-        void emit(key, text)
+        // 逐条外发模式下，每条回复就是一条独立消息，用量直接挂在它身上。
+        trackArchive(archiveMessage(key, {
+          role: 'assistant',
+          content: text,
+          ...(traceByKey.get(key) === undefined ? {} : { traceId: traceByKey.get(key) }),
+          ...(model === undefined ? {} : { model }),
+          ...(provider === undefined ? {} : { provider }),
+          ...(usage === undefined
+            ? {}
+            : {
+                inputTokens: usage.inputTokens ?? undefined,
+                outputTokens: usage.outputTokens ?? undefined,
+                cacheReadTokens: usage.cacheReadTokens ?? undefined,
+                cacheWriteTokens: usage.cacheWriteTokens ?? undefined,
+                totalTokens: usage.totalTokens ?? undefined,
+                ...(fragmentCost === 0 ? {} : { costMicros: fragmentCost }),
+              }),
+        }))
+        trackReply(emit(key, text))
         return
       }
       const buffer = pending.get(sessionId) ?? []
@@ -668,12 +1380,33 @@ export function createGateway(ctx, config) {
     if (event.type === 'turn/end') {
       const buffer = pending.get(sessionId)
       pending.delete(sessionId)
+      const accumulated = pendingUsage.get(sessionId)
+      pendingUsage.delete(sessionId)
       const sender = turnSender.get(sessionId)
       turnSender.delete(sessionId)
       const record = sessions.get(key)
       const mention = record?.groupId !== undefined && groupMention ? sender : undefined
+      // 一轮结束记一次用量。逐条外发模式下 token 已经挂在各条消息上，这里只计轮数，
+      // 否则同一批 token 会被算两遍。
+      trackArchive(archiveUsage(key, {
+        turns: 1,
+        ...(forward === 'all'
+          ? {}
+          : {
+              inputTokens: accumulated?.inputTokens ?? 0,
+              outputTokens: accumulated?.outputTokens ?? 0,
+              cacheReadTokens: accumulated?.cacheReadTokens ?? 0,
+              cacheWriteTokens: accumulated?.cacheWriteTokens ?? 0,
+              costMicros: accumulated?.costMicros ?? 0,
+            }),
+      }))
       if (buffer !== undefined && buffer.length > 0) {
-        void emit(key, buffer.join('\n\n'), mention)
+        trackArchive(archiveMessage(key, {
+          role: 'assistant',
+          content: buffer.join('\n\n'),
+          ...(traceByKey.get(key) === undefined ? {} : { traceId: traceByKey.get(key) }),
+        }))
+        trackReply(emit(key, buffer.join('\n\n'), mention))
         return
       }
       // A failed or interrupted turn can close without any assistant text. The
@@ -685,12 +1418,19 @@ export function createGateway(ctx, config) {
         const route = sessions.get(key)
         const fallback = { ...(route ?? {}) }
         if (reason.includes('prompt variable')) {
-          ctx.logger?.warn?.(`channel-gateway: preset drift on ${key}, resetting the conversation`)
+          warn(`channel-gateway: preset drift on ${key}, resetting the conversation`)
           sessions.delete(key)
           bySession.delete(sessionId)
-          void persist()
+          void store.remove(key).catch(error => {
+            warn(`channel-gateway: drop drifted conversation failed: ${error.message}`)
+          })
         }
-        void emit(key, FALLBACK_REPLY, mention, fallback)
+        trackArchive(archiveMessage(key, {
+          role: 'assistant',
+          content: FALLBACK_REPLY,
+          ...(traceByKey.get(key) === undefined ? {} : { traceId: traceByKey.get(key) }),
+        }))
+        trackReply(emit(key, FALLBACK_REPLY, mention, fallback))
       }
     }
   }
@@ -703,7 +1443,7 @@ export function createGateway(ctx, config) {
     if (record === undefined) throw new Error(`unknown conversation key: ${key}`)
     record.mode = mode
     record.modeChangedAt = new Date().toISOString()
-    await persist()
+    await persist(record)
     return { key, mode }
   }
 
@@ -860,7 +1600,7 @@ export function createGateway(ctx, config) {
     const record = sessions.get(key)
     if (record === undefined) throw new Error(`unknown conversation key: ${key}`)
     record.label = typeof label === 'string' && label.trim() !== '' ? label.trim() : null
-    await persist()
+    await persist(record)
     // 会话标题跟着备注走，侧边栏和面板显示一致。
     if (record.label !== null) await renameSession(key, `${record.label} · #${record.token}`)
     return { key, label: record.label, title: record.title }
@@ -906,7 +1646,7 @@ export function createGateway(ctx, config) {
         source: { kind: 'admin', channel: record.channel, summary: 'admin reply' },
       })
     } catch (error) {
-      ctx.logger?.warn?.(`channel-gateway: could not record admin reply: ${error.message}`)
+      warn(`channel-gateway: could not record admin reply: ${error.message}`)
     }
     const delivery = await emit(key, text, mention)
     return { key, sent: true, ...delivery }
@@ -915,17 +1655,44 @@ export function createGateway(ctx, config) {
   /** Minimal HTTP surface; the platform adapter is the only intended caller. */
   async function handleHttp(req, res) {
     try {
-      if (token !== undefined) {
-        const header = req.headers?.authorization ?? ''
-        if (header !== `Bearer ${token}`) return sendJson(res, 401, { error: 'unauthorized' })
-      }
       // 读接口也要先把映射从磁盘载入：否则重启后第一条消息之前面板是空的。
-      await load()
       const url = new URL(req.url ?? '/', 'http://localhost')
+      const access = auth.classify(req, url, route)
+      if (!access.allowed) {
+        // 面板是给人用浏览器打开的：返回一个能输入令牌的页面，而不是 401 JSON。
+        // 401 与 403 要分开：前者是"没凭证/凭证错"，后者是"凭证对但权限不够"。
+        // 都返回 401 会让只读用户以为自己的令牌写错了，一遍遍重试。
+        const status = access.status ?? 401
+        if (req.method === 'GET' && url.pathname === `${route}/panel`) return sendPanelLogin(res, route)
+        if (status === 403) {
+          return sendJson(res, 403, { error: 'forbidden', code: 'FORBIDDEN', reason: access.reason ?? 'read-only token' })
+        }
+        return sendJson(res, 401, { error: 'unauthorized', code: 'UNAUTHORIZED' })
+      }
+      await load()
+      if (access.setCookie === true && url.pathname === `${route}/panel`) {
+        // 首次带 ?token= 打开面板：换成 cookie 再跳转，令牌就不会留在地址栏和历史里。
+        res.writeHead?.(302, { location: `${route}/panel`, 'set-cookie': auth.cookieHeader(route, access.role === 'viewer' ? 'viewer' : 'admin') })
+        res.end?.('')
+        return
+      }
       if (req.method === 'POST' && url.pathname === route) {
         const body = await readJson(req)
         const result = await inbound(body)
         return sendJson(res, result.duplicate === true ? 200 : 202, result)
+      }
+      // 面板靠它决定"要不要显示删除/重放这些按钮"。服务端已经拦了，但这个接口
+      // 让界面不用猜：拿着只读令牌却看到满屏可点的删除按钮，是最糟的体验。
+      if (req.method === 'GET' && url.pathname === `${route}/whoami`) {
+        const readonly = access.role !== 'admin'
+        return sendJson(res, 200, {
+          mode: auth.mode,
+          role: access.role,
+          via: access.via ?? null,
+          readonly,
+          // 全开模式下"只读"没有意义，如实告诉界面：这里谁都能写。
+          reason: access.reason ?? null,
+        })
       }
       if (req.method === 'GET' && url.pathname === `${route}/sessions`) {
         const includeArchived = url.searchParams.get('all') === '1'
@@ -998,6 +1765,15 @@ export function createGateway(ctx, config) {
         const body = await readJson(req)
         return sendJson(res, 200, await setLabel(body?.key, body?.label))
       }
+      if (req.method === 'GET' && url.pathname === `${route}/health`) {
+        const report = await health()
+        return sendJson(res, report.ok ? 200 : 503, report)
+      }
+      if (req.method === 'GET' && url.pathname === `${route}/alerts`) {
+        // 告警状态与最近记录。读接口，只读令牌也能看得到——值班的人需要它。
+        const size = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 20), 1), 100)
+        return sendJson(res, 200, { status: alerts.status(), entries: alerts.list(size) })
+      }
       if (req.method === 'GET' && url.pathname === `${route}/status`) {
         const list = [...sessions.values()].filter(record => record.archivedAt === undefined)
         return sendJson(res, 200, {
@@ -1007,6 +1783,9 @@ export function createGateway(ctx, config) {
           human: list.filter(item => item.channel !== 'eval' && item.mode === 'human').length,
           eval: list.filter(item => item.channel === 'eval').length,
           preset: agentPreset,
+          // 队列积压直接反映"收下了但还没处理完"，值得和会话数放一起看。
+          inbox: await statSafely(inbox),
+          ...(outbox === undefined ? {} : { outbox: await statSafely(outbox) }),
           paths: {
             privateWorkspace,
             groupWorkspace,
@@ -1051,25 +1830,160 @@ export function createGateway(ctx, config) {
         } else {
           return sendJson(res, 400, { error: 'reset needs { key } or { all: true }' })
         }
-        if (removed.length > 0) await persist()
+        if (removed.length > 0) {
+          for (const key of removed) await store.remove(key)
+        }
         return sendJson(res, 200, { removed })
+      }
+      if (req.method === 'GET' && url.pathname === `${route}/messages`) {
+        // 会话历史：面板和工单排障都从这儿看，不再去翻 DSH 的会话目录。
+        const key = url.searchParams.get('key')
+        if (key === null || key === '') return sendJson(res, 400, { error: 'key is required' })
+        const limit = Number(url.searchParams.get('limit') ?? 50)
+        const messages = await store.listMessages(key, Number.isFinite(limit) && limit > 0 ? Math.min(limit, 500) : 50)
+        return sendJson(res, 200, { key, messages })
+      }
+      if (req.method === 'GET' && url.pathname === `${route}/usage`) {
+        // 用量与成本：老板问"这个月花了多少"，这里要能答。
+        // 成本是**写入时**按当时的价格算好存下来的，不是读的时候乘出来的 ——
+        // 否则一调价，历史报表全变，对不上账。
+        const days = Number(url.searchParams.get('days') ?? 30)
+        const window = Number.isFinite(days) && days > 0 ? Math.min(days, 365) : 30
+        const key = url.searchParams.get('key')
+        const limit = Number(url.searchParams.get('limit') ?? 500)
+        const rows = await store.listUsage({
+          days: window,
+          ...(key === null || key === '' ? {} : { key }),
+          limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 2000) : 500,
+        })
+        const totals = rows.reduce(
+          (acc, row) => ({
+            turns: acc.turns + row.turns,
+            inputTokens: acc.inputTokens + row.inputTokens,
+            outputTokens: acc.outputTokens + row.outputTokens,
+            cacheReadTokens: acc.cacheReadTokens + row.cacheReadTokens,
+            cacheWriteTokens: acc.cacheWriteTokens + row.cacheWriteTokens,
+            costMicros: acc.costMicros + row.costMicros,
+          }),
+          { turns: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0, costMicros: 0 },
+        )
+        return sendJson(res, 200, {
+          days: window,
+          ...(key === null || key === '' ? {} : { key }),
+          pricing: { configured: pricingReady(pricing), currency: pricing.currency },
+          // 每行也给一份格式化好的 `cost`：面板不该自己再实现一遍换算。
+          totals: { ...totals, cost: formatCost(totals.costMicros) },
+          rows: rows.map(row => ({ ...row, cost: formatCost(row.costMicros) })),
+        })
+      }
+      if (req.method === 'GET' && url.pathname === `${route}/retention`) {
+        // 只读：永远算一遍计划，不写。
+        return sendJson(res, 200, await runRetention({ dryRun: true }))
+      }
+      if (req.method === 'POST' && url.pathname === `${route}/retention`) {
+        const body = await readJson(req)
+        return sendJson(res, 200, await runRetention(body ?? {}))
+      }
+      if (req.method === 'GET' && url.pathname === `${route}/dead`) {
+        // 死信：重试用尽、需要人看一眼的条目。两个队列都列，运维不用记参数。
+        const limit = Number(url.searchParams.get('limit') ?? 50)
+        const size = Number.isFinite(limit) && limit > 0 ? Math.min(limit, 200) : 50
+        return sendJson(res, 200, {
+          inbox: await inbox.listDead(size),
+          ...(outbox === undefined ? {} : { outbox: await outbox.listDead(size) }),
+        })
+      }
+      if (req.method === 'POST' && url.pathname === `${route}/replay`) {
+        // 人工重放：把死信放回队列。不给 ids 就重放当前全部死信。
+        const body = await readJson(req)
+        const queueName = body?.queue ?? 'outbox'
+        return sendJson(res, 200, await replayDead(queueName, body?.ids, body?.actor))
+      }
+      if (req.method === 'GET' && url.pathname === `${route}/audit`) {
+        const limit = Number(url.searchParams.get('limit') ?? 50)
+        return sendJson(res, 200, {
+          entries: await audit.list(Number.isFinite(limit) && limit > 0 ? Math.min(limit, 500) : 50),
+        })
+      }
+      if (req.method === 'GET' && url.pathname === `${route}/inbox`) {
+        // 运维排查用：看还有哪些消息收下了没处理完。
+        const limit = Number(url.searchParams.get('limit') ?? 50)
+        return sendJson(res, 200, {
+          items: await inbox.list(Number.isFinite(limit) ? limit : 50),
+          delivery: await statSafely(inbox),
+        })
       }
       if (req.method === 'GET' && url.pathname === `${route}/outbox` && outboxFile !== undefined) {
         const lines = await readTail(outboxFile, Number(url.searchParams.get('limit') ?? 50))
-        return sendJson(res, 200, { messages: lines.map(line => JSON.parse(line)) })
+        // delivery 是"还欠什么"：pending/failed/dead 的条数与最早该重发的时间。
+        // 只读审计日志看不出来有没有回复没发出去，面板和排障需要这个。
+        const delivery = outbox === undefined ? undefined : await outbox.stats()
+        return sendJson(res, 200, {
+          messages: lines.map(line => JSON.parse(line)),
+          ...(delivery === undefined ? {} : { delivery }),
+        })
       }
       return sendJson(res, 404, { error: 'not found' })
     } catch (error) {
+      if (error.code === 'BAD_QUEUE') {
+        return sendJson(res, 400, { error: error.message, code: error.code })
+      }
+      if (error.code === 'LEASE_LOST') {
+        return sendJson(res, 503, { error: error.message, code: error.code })
+      }
       if (error.code === 'RATE_LIMITED') {
         res.setHeader?.('retry-after', String(error.retryAfter ?? 60))
         return sendJson(res, 429, { error: error.message, retryAfter: error.retryAfter })
       }
-      ctx.logger?.warn?.(`channel-gateway: ${error.message}`)
+      warn(`channel-gateway: ${error.message}`)
       return sendJson(res, 400, { error: error.message })
     }
   }
 
-  return { route, inbound, observe, handleHttp, setMode, adminReply, setLabel, adapterStatus, listOrphans, restoreWorkspace, readHistory, setArchived, deleteConversation, sessions }
+  return {
+    route,
+    inbound,
+    observe,
+    handleHttp,
+    auth,
+    setMode,
+    adminReply,
+    setLabel,
+    adapterStatus,
+    listOrphans,
+    restoreWorkspace,
+    readHistory,
+    setArchived,
+    deleteConversation,
+    sessions,
+    store,
+    health,
+    outbox,
+    pricing,
+    listMessages: (key, limit) => store.listMessages(key, limit),
+    listUsage: query => store.listUsage(query),
+    flushArchives,
+    archiveMessage,
+    replayDead,
+    runRetention,
+    runRetentionSweep,
+    startRetentionWorker,
+    stopRetentionWorker,
+    retention: retentionState,
+    audit,
+    drainOutbox,
+    inbox,
+    drainInbox,
+    processInbound,
+    startOutboxWorker: startWorker,
+    stopOutboxWorker: stopWorker,
+    startWorker,
+    stopWorker,
+    alerts,
+    checkAlerts,
+    startAlertWorker,
+    stopAlertWorker,
+  }
 }
 
 /** Validate and shape one platform message. */
@@ -1145,525 +2059,6 @@ function titleFor(message, key) {
 }
 
 /** 客服工作台：两栏收件箱，左列表右对话。 */
-function panelHtml(route) {
-  return `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>客服控制面板</title>
-<style>
-  :root {
-    color-scheme: light dark;
-    --bg:#fff; --panel:#fafafa; --line:#e6e6e6; --text:#1a1a1a; --muted:#8a8a8a;
-    --accent:#2563eb; --sel:#eef2ff; --in:#f2f2f2; --ai:#e8f0fe; --admin:#e6f7ec; --danger:#c33;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#101010; --panel:#171717; --line:#2a2a2a; --text:#e9e9e9; --muted:#8f8f8f;
-      --accent:#60a5fa; --sel:#1e293b; --in:#1f1f1f; --ai:#1c2b45; --admin:#15301f; }
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; }
-  body { margin:0; height:100vh; overflow:hidden; background:var(--bg); color:var(--text);
-    font: 14px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-  .app { display:flex; height:100vh; }
-  .side { width:320px; min-width:240px; border-right:1px solid var(--line); display:flex; flex-direction:column; background:var(--panel); }
-  .side-top { padding:14px 16px 10px; border-bottom:1px solid var(--line); }
-  .title { font-size:15px; font-weight:600; display:flex; align-items:center; gap:8px; }
-  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); }
-  .dot.on { background:#22c55e; }
-  .side-actions { display:flex; gap:6px; margin-top:10px; }
-  .filters { display:flex; gap:6px; padding:10px 16px; border-bottom:1px solid var(--line); align-items:center; }
-  .search { flex:1; font:inherit; font-size:12.5px; padding:5px 9px; border-radius:7px;
-    border:1px solid var(--line); background:var(--bg); color:inherit; outline:none; }
-  .search:focus { border-color:var(--accent); }
-  .bulk[hidden] { display:none; }
-  .bulk { display:flex; gap:6px; align-items:center; padding:8px 16px; border-bottom:1px solid var(--line);
-    font-size:12px; color:var(--muted); background:var(--sel); }
-  .pick { margin:2px 0 0; accent-color:var(--accent); }
-  .item.archived { opacity:.55; }
-  .chip { font:inherit; font-size:12px; padding:3px 10px; border-radius:999px; border:1px solid var(--line);
-    background:transparent; color:inherit; cursor:pointer; opacity:.75; }
-  .chip.active { background:var(--sel); border-color:transparent; opacity:1; }
-  .list { flex:1; overflow:auto; }
-  .item { display:flex; gap:10px; padding:11px 16px; cursor:pointer; border-bottom:1px solid var(--line); }
-  .item:hover { background:var(--sel); }
-  .item.active { background:var(--sel); }
-  .avatar { width:34px; height:34px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center;
-    font-size:13px; font-weight:600; color:#fff; }
-  .item-body { min-width:0; flex:1; }
-  .item-name { display:flex; justify-content:space-between; gap:8px; align-items:baseline; }
-  .item-name b { font-weight:600; font-size:13.5px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .item-name time { font-size:11px; color:var(--muted); flex:none; }
-  .item-sub { font-size:12px; color:var(--muted); display:flex; gap:6px; align-items:center; margin-top:2px; }
-  .tag { font-size:11px; padding:0 7px; border-radius:999px; border:1px solid var(--line); }
-  .tag.human { color:#b45309; border-color:#f59e0b55; background:#f59e0b14; }
-  .side-foot { padding:10px 16px; border-top:1px solid var(--line); font-size:12px; color:var(--muted);
-    display:flex; justify-content:space-between; align-items:center; gap:8px; }
-  main { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
-  /* 嵌在设置面板里时列宽会变窄：会话列表收成上半屏，对话留出空间。 */
-  @media (max-width: 700px) {
-    .app { flex-direction:column; }
-    .side { width:auto; min-width:0; max-height:42vh; border-right:0; border-bottom:1px solid var(--line); }
-  }
-  #pane { flex:1; display:flex; flex-direction:column; min-height:0; }
-  .thread-top { padding:12px 20px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:10px;
-    position:sticky; top:0; z-index:3; background:var(--bg); }
-  .thread-top .who { font-weight:600; }
-  .thread-top .sub { font-size:12px; color:var(--muted); }
-  .spacer { flex:1; }
-  .btn { font:inherit; font-size:12px; padding:4px 12px; border-radius:7px; border:1px solid var(--line);
-    background:transparent; color:inherit; cursor:pointer; }
-  .btn:hover { background:var(--sel); }
-  .btn.primary { background:var(--accent); border-color:transparent; color:#fff; }
-  .btn:disabled { opacity:.45; cursor:default; }
-  .messages { flex:1; min-height:0; overflow:auto; padding:22px 24px; display:flex; flex-direction:column; gap:10px; }
-  .bubble { max-width:72%; padding:9px 13px; border-radius:14px; white-space:pre-wrap; word-break:break-word; }
-  .bubble.customer { align-self:flex-start; background:var(--in); border-bottom-left-radius:4px; }
-  .bubble.ai { align-self:flex-end; background:var(--ai); border-bottom-right-radius:4px; }
-  .bubble.admin { align-self:flex-end; background:var(--admin); border-bottom-right-radius:4px; }
-  .bubble .meta { font-size:10.5px; color:var(--muted); margin-top:4px; }
-  .bubble .shot { display:block; max-width:320px; max-height:240px; border-radius:8px; margin-top:6px; cursor:zoom-in; }
-  .composer { display:flex; gap:8px; padding:14px 20px; border-top:1px solid var(--line); }
-  .composer input { flex:1; font:inherit; padding:9px 13px; border-radius:9px; border:1px solid var(--line);
-    background:var(--bg); color:inherit; outline:none; }
-  .composer input:focus { border-color:var(--accent); }
-  .empty { margin:auto; text-align:center; color:var(--muted); font-size:13px; line-height:1.9; }
-  .empty b { display:block; color:var(--text); font-size:14px; margin-bottom:4px; }
-  .hint { font-size:12px; color:var(--muted); padding:0 20px 12px; }
-  .btn.mini { font-size:10.5px; padding:0 6px; margin-left:6px; border-radius:5px; }
-  .mention { align-self:center; font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px; }
-  .card { margin:24px auto; width:min(520px, 100%); display:flex; flex-direction:column; gap:14px; }
-  .field { display:flex; flex-direction:column; gap:6px; font-size:12px; color:var(--muted); }
-  .field input { font:inherit; font-size:13px; padding:8px 11px; border-radius:8px; border:1px solid var(--line);
-    background:var(--bg); color:var(--text); outline:none; }
-  .field input:focus { border-color:var(--accent); }
-  .card .row { display:flex; gap:8px; align-items:center; }
-  .kv { font-size:12px; color:var(--muted); display:grid; grid-template-columns: 92px 1fr; gap:4px 10px; }
-  .kv code { font-size:11.5px; word-break:break-all; }
-  a { color:var(--accent); }
-</style></head>
-<body>
-<div class="app">
-  <aside class="side">
-    <div class="side-top">
-      <div class="title"><span class="dot" id="bot-dot"></span>客服控制面板</div>
-      <div class="side-actions">
-        <button class="btn" id="bot-toggle">启动</button>
-        <button class="btn" id="refresh">刷新</button>
-        <button class="btn" id="config-open" title="QQ 凭证">配置</button>
-      </div>
-    </div>
-    <div class="filters">
-      <input id="search" class="search" placeholder="搜索群名 / 客户 id / 备注">
-    </div>
-    <div class="filters">
-      <button class="chip active" data-filter="all">全部</button>
-      <button class="chip" data-filter="human">人工</button>
-      <button class="chip" data-filter="ai">自动</button>
-      <span class="spacer"></span>
-      <label class="chip"><input type="checkbox" id="show-archived"> 归档</label>
-    </div>
-    <div class="bulk" id="bulk" hidden></div>
-    <div class="list" id="list"></div>
-    <div class="side-foot">
-      <span id="summary">—</span>
-      <a href="#" id="orphan-link">孤儿 0</a>
-    </div>
-  </aside>
-  <main>
-    <div id="pane"></div>
-  </main>
-</div>
-<script>
-const BASE = ${JSON.stringify(route)}
-const state = { records: [], selected: null, messages: [], filter: 'all', bot: null, status: null, orphans: [], view: 'thread',
-  query: '', showArchived: false, picked: new Set(), config: null }
-const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c]))
-const el = id => document.getElementById(id)
-
-async function api(path, body) {
-  const res = await fetch(BASE + path, body === undefined ? {} : {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
-  })
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? res.status)
-  return res.json().catch(() => ({}))
-}
-
-function ago(iso) {
-  if (!iso) return ''
-  const diff = Date.now() - new Date(iso).getTime()
-  const m = Math.floor(diff / 60000)
-  if (m < 1) return '刚刚'
-  if (m < 60) return m + ' 分钟前'
-  const h = Math.floor(m / 60)
-  if (h < 24) return h + ' 小时前'
-  return Math.floor(h / 24) + ' 天前'
-}
-
-function color(name) {
-  let hash = 0
-  for (const ch of String(name)) hash = (hash * 31 + ch.codePointAt(0)) % 360
-  return 'hsl(' + hash + ', 52%, 48%)'
-}
-
-function displayName(record) {
-  if (record.label) return record.label
-  if (record.groupId) return record.groupName || '群 ' + record.groupId.slice(0, 6)
-  if (record.senderName) return record.senderName
-  return '客户 ' + String(record.key).split(':').pop().slice(0, 6)
-}
-
-function visible() {
-  const query = state.query.trim().toLowerCase()
-  return state.records.filter(r => {
-    if (!state.showArchived && r.archivedAt) return false
-    if (state.filter === 'human' && r.mode !== 'human') return false
-    if (state.filter === 'ai' && r.mode === 'human') return false
-    if (query === '') return true
-    const haystack = [displayName(r), r.key, r.senderId, r.groupId, r.groupName, r.label]
-      .filter(Boolean).join(' ').toLowerCase()
-    return haystack.includes(query)
-  })
-}
-
-function renderList() {
-  const rows = visible()
-  el('list').innerHTML = rows.length === 0
-    ? '<div class="empty" style="padding:32px 16px">还没有客户会话</div>'
-    : rows.map(r => {
-        const name = displayName(r)
-        const human = r.mode === 'human'
-        return '<div class="item' + (r.key === state.selected ? ' active' : '') + (r.archivedAt ? ' archived' : '')
-          + '" data-key="' + esc(r.key) + '">'
-          + '<input type="checkbox" class="pick" data-pick="' + esc(r.key) + '"' + (state.picked.has(r.key) ? ' checked' : '') + '>'
-          + '<div class="avatar" style="background:' + color(name) + '">' + esc(name.slice(0, 1)) + '</div>'
-          + '<div class="item-body"><div class="item-name"><b>' + esc(name) + '</b><time>' + ago(r.lastSeenAt) + '</time></div>'
-          + '<div class="item-sub">' + (r.groupId ? '群聊' : '私聊')
-          + ' <span class="tag ' + (human ? 'human' : '') + '">' + (human ? '人工' : '自动') + '</span>'
-          + (r.token ? ' <span class="tag" title="点击复制完整标题，DSH 里搜它" data-copy="'
-              + esc(r.title ?? '') + '">#' + esc(r.token) + '</span>' : '')
-          + '</div>'
-          + '</div></div>'
-      }).join('')
-}
-
-function renderThread() {
-  const pane = el('pane')
-  const previous = el('reply')
-  const draft = previous?.value ?? ''
-  const focused = previous !== null && document.activeElement === previous
-  const caret = previous?.selectionStart ?? draft.length
-  if (state.view === 'orphans') {
-    pane.innerHTML = '<div class="thread-top"><span class="who">孤儿会话</span><span class="spacer"></span>'
-      + '<button class="btn" id="back">返回</button></div>'
-      + '<div class="messages">' + (state.orphans.length === 0
-        ? '<div class="empty"><b>没有孤儿会话</b>磁盘上的会话都挂在某个工作区里</div>'
-        : state.orphans.map(o => '<div class="bubble customer">' + esc(o.path) + '<div class="meta">' + o.sessions.length
-            + ' 个会话 <button class="btn" data-restore="' + esc(o.path) + '">恢复工作区</button></div></div>').join(''))
-      + '</div>'
-    return
-  }
-  if (state.view === 'config') {
-    const cfg = state.config
-    pane.innerHTML = '<div class="thread-top"><span class="who">配置</span><span class="spacer"></span>'
-      + '<button class="btn" id="back">返回</button></div>'
-      + '<div class="messages"><div class="card">'
-      + '<div class="field">QQ AppID<input id="cfg-appid" value="' + esc(cfg?.appId ?? '') + '" placeholder="填你的 AppID"></div>'
-      + '<div class="field">QQ AppSecret<input id="cfg-secret" type="password" placeholder="'
-      + (cfg?.hasSecret ? '已配置，留空不修改' : '首次配置必填') + '"></div>'
-      + '<div class="row"><button class="btn primary" id="cfg-save">保存</button>'
-      + '<button class="btn" id="cfg-test">测试连接</button>'
-      + '<span class="meta">保存后需要重启机器人</span></div>'
-      + '<div class="kv"><span>凭证文件</span><code>' + esc(cfg?.envFile ?? '') + '</code>'
-      + '<span>数据目录</span><code>' + esc(cfg?.paths?.data ?? '') + '</code>'
-      + '<span>知识库</span><code>' + esc(cfg?.paths?.kb ?? '') + '</code>'
-      + '<span>适配器</span><code>' + esc(cfg?.paths?.adapter ?? '') + '</code></div>'
-      + '</div></div>'
-    return
-  }
-  const record = state.records.find(r => r.key === state.selected)
-  if (record === undefined) {
-    pane.innerHTML = '<div class="empty"><b>选择左侧会话</b>接管后可以直接回复客户</div>'
-    return
-  }
-  const name = displayName(record)
-  const human = record.mode === 'human'
-  const bubbles = state.messages.length === 0
-    ? '<div class="empty">还没有消息</div>'
-    : state.messages.map(m => {
-        const who = m.kind === 'customer' && record.groupId
-          ? (m.senderName ? '客户 ' + m.senderName : '客户 ' + String(m.senderId ?? '').slice(0, 6))
-          : ''
-        const replyTo = m.kind === 'customer' && record.groupId && m.senderId
-          ? '<button class="btn mini" data-reply-to="' + esc(m.senderId) + '">回复</button>'
-          : ''
-        const shots = (m.images ?? []).map(file =>
-          '<img class="shot" loading="lazy" src="' + BASE + '/image?path=' + encodeURIComponent(file) + '">').join('')
-        return '<div class="bubble ' + m.kind + '">' + (m.text === '' ? '' : esc(m.text)) + shots
-          + (who === '' && replyTo === '' ? '' : '<div class="meta">' + esc(who) + replyTo + '</div>') + '</div>'
-      }).join('')
-  pane.innerHTML = '<div class="thread-top">'
-    + '<div class="avatar" style="background:' + color(name) + '">' + esc(name.slice(0, 1)) + '</div>'
-    + '<div><div class="who">' + esc(name) + '</div><div class="sub">'
-    + '<span class="tag ' + (human ? 'human' : '') + '">' + (human ? '人工接管中' : 'AI 自动回复') + '</span></div></div>'
-    + '<span class="spacer"></span>'
-    + '<button class="btn" data-act="label">备注</button>'
-    + '<button class="btn primary" data-act="mode">' + (human ? '交还 AI' : '接管') + '</button>'
-    + '</div>'
-    + '<div class="messages" id="messages">' + bubbles + '</div>'
-    + (human
-      ? '<div class="composer">'
-        + (state.mention ? '<span class="mention">@' + esc(String(state.mention).slice(0, 6))
-            + '<button class="btn mini" data-clear-mention>×</button></span>' : '')
-        + '<input id="reply" placeholder="回复客户…"><button class="btn primary" id="send">发送</button></div>'
-      : '<div class="hint">接管后才能直接回复。AI 自动回复期间，你的消息会被忽略。</div>')
-  const next = el('reply')
-  if (next !== null) {
-    next.value = draft
-    if (focused) {
-      next.focus()
-      try { next.setSelectionRange(caret, caret) } catch { /* 忽略 */ }
-    }
-  }
-  const messages = el('messages')
-  if (messages) messages.scrollTop = messages.scrollHeight
-}
-
-function renderBulk() {
-  const bulk = el('bulk')
-  if (state.picked.size === 0) {
-    bulk.hidden = true
-    bulk.innerHTML = ''
-    return
-  }
-  bulk.hidden = false
-  bulk.innerHTML = '<span>已选 ' + state.picked.size + '</span><span class="spacer"></span>'
-    + '<button class="btn mini" data-bulk="archive">归档</button>'
-    + '<button class="btn mini" data-bulk="restore">取消归档</button>'
-    + '<button class="btn mini" data-bulk="delete">删除</button>'
-}
-
-async function loadList() {
-  const [list, status, bot] = await Promise.all([
-    api('/sessions' + (state.showArchived ? '?all=1' : '')), api('/status'), api('/adapter'),
-  ])
-  state.records = list.sessions ?? []
-  state.status = status
-  state.bot = bot
-  el('bot-dot').className = 'dot' + (bot.running ? ' on' : '')
-  el('bot-toggle').textContent = bot.running ? '停止' : '启动'
-  el('summary').textContent = (status.conversations ?? 0) + ' 个会话 · 人工 ' + (status.human ?? 0)
-  renderList()
-  renderBulk()
-}
-
-async function loadHistory() {
-  if (state.selected === null) return
-  const body = await api('/history?key=' + encodeURIComponent(state.selected))
-  state.messages = body.messages ?? []
-}
-
-let lastSignature = ''
-function signature() {
-  const last = state.messages[state.messages.length - 1]
-  const record = state.records.find(r => r.key === state.selected)
-  return [state.selected, state.view, state.messages.length, last?.at ?? '',
-    record?.mode ?? '', record?.label ?? '', record?.archivedAt ?? ''].join('|')
-}
-
-async function refresh() {
-  try {
-    await loadList()
-    if (state.selected !== null) await loadHistory()
-    const next = signature()
-    if (next !== lastSignature) {
-      lastSignature = next
-      renderThread()
-    }
-  } catch (error) {
-    console.warn('refresh failed:', error.message)
-  }
-}
-
-document.addEventListener('click', async event => {
-  const copy = event.target.closest('[data-copy]')
-  if (copy !== null) {
-    const text = copy.dataset.copy
-    if (text) {
-      try { await navigator.clipboard.writeText(text); copy.textContent = '已复制' } catch { /* 忽略 */ }
-      setTimeout(() => { copy.textContent = '#' + (text.match(/#(\w+)$/)?.[1] ?? '') }, 1200)
-    }
-    return
-  }
-  const pick = event.target.closest('[data-pick]')
-  if (pick !== null) {
-    const key = pick.dataset.pick
-    if (state.picked.has(key)) state.picked.delete(key)
-    else state.picked.add(key)
-    renderList()
-    renderBulk()
-    return
-  }
-  const bulk = event.target.closest('[data-bulk]')
-  if (bulk !== null) {
-    const keys = [...state.picked]
-    const action = bulk.dataset.bulk
-    if (action === 'delete' && !confirm('删除 ' + keys.length + ' 个会话？会话记录会被永久删除。')) return
-    const failedToDetach = []
-    for (const key of keys) {
-      try {
-        if (action === 'delete') {
-          const result = await api('/delete', { key })
-          if (result.detached === false) failedToDetach.push(key)
-        } else {
-          await api('/archive', { key, archived: action === 'archive' })
-        }
-      } catch (error) { alert(error.message) }
-    }
-    if (failedToDetach.length > 0) {
-      alert('已删除 ' + keys.length + ' 条，但 ' + failedToDetach.length + ' 条没能从侧边栏摘掉，刷新页面后再看。')
-    }
-    state.picked.clear()
-    if (keys.includes(state.selected) && action === 'delete') state.selected = null
-    await refresh()
-    renderThread()
-    return
-  }
-  const item = event.target.closest('.item')
-  if (item !== null) {
-    state.selected = item.dataset.key
-    state.view = 'thread'
-    state.messages = []
-    state.mention = null
-    renderList()
-    renderThread()
-    try { await loadHistory(); renderThread() } catch (error) { alert(error.message) }
-    return
-  }
-  const replyTo = event.target.closest('[data-reply-to]')
-  if (replyTo !== null) {
-    state.mention = replyTo.dataset.replyTo
-    renderThread()
-    el('reply')?.focus()
-    return
-  }
-  if (event.target.closest('[data-clear-mention]') !== null) {
-    state.mention = null
-    renderThread()
-    return
-  }
-  const chip = event.target.closest('.chip')
-  if (chip !== null) {
-    state.filter = chip.dataset.filter
-    for (const node of document.querySelectorAll('.chip')) node.classList.toggle('active', node === chip)
-    renderList()
-    return
-  }
-  const restore = event.target.closest('[data-restore]')
-  if (restore !== null) {
-    try { await api('/orphans/restore', { path: restore.dataset.restore }); alert('已登记为工作区，重启 dsh 后生效') }
-    catch (error) { alert(error.message) }
-    return
-  }
-  const act = event.target.closest('[data-act]')
-  if (act !== null) {
-    const record = state.records.find(r => r.key === state.selected)
-    if (record === undefined) return
-    const human = record.mode === 'human'
-    try {
-      if (act.dataset.act === 'mode') await api('/mode', { key: record.key, mode: human ? 'ai' : 'human' })
-      if (act.dataset.act === 'label') {
-        const text = prompt('备注名（留空清除）：')
-        if (text === null) return
-        await api('/label', { key: record.key, label: text })
-      }
-      await refresh()
-    } catch (error) { alert(error.message) }
-    return
-  }
-  if (event.target.id === 'back') { state.view = 'thread'; renderThread(); return }
-  if (event.target.id === 'orphan-link') {
-    event.preventDefault()
-    try { const body = await api('/orphans'); state.orphans = body.orphans ?? []; state.view = 'orphans'; renderThread() }
-    catch (error) { alert(error.message) }
-    return
-  }
-  if (event.target.id === 'bot-toggle') {
-    try { await api('/adapter/' + (state.bot.running ? 'stop' : 'start'), {}); await refresh() }
-    catch (error) { alert(error.message) }
-    return
-  }
-  if (event.target.id === 'refresh') { await refresh(); return }
-  if (event.target.id === 'config-open') {
-    try { state.config = await api('/config'); state.view = 'config'; renderThread() }
-    catch (error) { alert(error.message) }
-    return
-  }
-  if (event.target.id === 'cfg-save') {
-    const appId = el('cfg-appid').value.trim()
-    const appSecret = el('cfg-secret').value.trim()
-    try {
-      await api('/config', { appId, appSecret })
-      alert('已保存。重启机器人后生效。')
-      state.config = await api('/config')
-      renderThread()
-    } catch (error) { alert(error.message) }
-    return
-  }
-  if (event.target.id === 'cfg-test') {
-    try { const result = await api('/config/test', {}); alert('连接成功，token 有效期 ' + (result.expiresIn ?? '?') + ' 秒') }
-    catch (error) { alert('连接失败：' + error.message) }
-    return
-  }
-  if (event.target.id === 'send') {
-    const input = el('reply')
-    const text = input.value.trim()
-    if (text === '') return
-    const body = { key: state.selected, text }
-    if (state.mention) body.mention = state.mention
-    try {
-      const result = await api('/reply', body)
-      input.value = ''
-      state.mention = null
-      if (result.delivered === false) {
-        alert('消息没送到客户：' + (result.error ?? '未知原因') + ' — QQ 只允许在客户最后一条消息后 5 分钟内被动回复。')
-      }
-      await refresh()
-    } catch (error) { alert(error.message) }
-  }
-})
-
-document.addEventListener('click', event => {
-  if (event.target.classList?.contains('shot')) window.open(event.target.src, '_blank', 'noopener')
-})
-document.getElementById('search').addEventListener('input', event => {
-  state.query = event.target.value
-  renderList()
-})
-document.getElementById('show-archived').addEventListener('change', async event => {
-  state.showArchived = event.target.checked
-  await loadList()
-  renderThread()
-})
-document.addEventListener('keydown', event => {
-  if (event.key === 'Enter' && event.target.id === 'reply') {
-    event.preventDefault()
-    el('send')?.click()
-  }
-})
-
-const preselect = new URLSearchParams(location.search).get('key')
-if (preselect) { state.selected = preselect; state.view = 'thread' }
-refresh().then(async () => {
-  if (preselect) {
-    try { await loadHistory(); renderThread() } catch (error) { console.warn(error.message) }
-  }
-})
-setInterval(() => { void refresh() }, 5000)
-</script>
-</body></html>`
-}
-
-/** Map a file extension to a response content type. */
 function mimeOf(file) {
   const extension = file.slice(file.lastIndexOf('.')).toLowerCase()
   return { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }[extension]
@@ -1706,24 +2101,6 @@ async function readJson(req) {
   }
 }
 
-/** Read one JSON file, treating a missing file as empty. */
-async function readJsonFile(file) {
-  try {
-    return JSON.parse(await fs.readFile(file, 'utf8'))
-  } catch (error) {
-    if (error?.code === 'ENOENT') return undefined
-    throw error
-  }
-}
-
-/** Write one JSON file atomically. */
-async function writeJsonFile(file, value) {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  const temp = `${file}.${randomUUID()}.tmp`
-  await fs.writeFile(temp, `${JSON.stringify(value, undefined, 2)}\n`, 'utf8')
-  await fs.rename(temp, file)
-}
-
 /** Return the last `limit` non-empty lines of a file. */
 async function readTail(file, limit) {
   try {
@@ -1740,6 +2117,30 @@ function sendJson(res, status, value) {
   const body = JSON.stringify(value)
   res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' })
   res.end(body)
+}
+
+/**
+ * 面板的登录页：一个纯 HTML 表单，GET 回 `{route}/panel?token=…`。
+ *
+ * 不用 JS：面板本身就是内联脚本，登录页再塞一段脚本就变成"两段脚本都要能跑"，
+ * 而这段脚本平时根本不会被测试覆盖。表单是最笨也最不会坏的做法。
+ */
+function sendPanelLogin(res, route) {
+  const body = `<!doctype html><html lang="zh-CN"><meta charset="utf-8">
+<title>需要访问令牌</title>
+<style>body{font:14px/1.6 system-ui,sans-serif;margin:0;display:grid;place-items:center;height:100vh;background:#f6f7f9;color:#222}
+form{background:#fff;padding:24px;border-radius:10px;box-shadow:0 2px 12px rgba(0,0,0,.08);width:280px}
+h1{font-size:15px;margin:0 0 12px}input{width:100%;box-sizing:border-box;padding:8px;border:1px solid #ccd;border-radius:6px}
+button{margin-top:12px;width:100%;padding:8px;border:0;border-radius:6px;background:#2b6cb0;color:#fff;cursor:pointer}
+p{margin:12px 0 0;font-size:12px;color:#666}</style>
+<form method="get" action="${route}/panel">
+<h1>这个面板需要访问令牌</h1>
+<input name="token" type="password" autofocus placeholder="token">
+<button type="submit">进入</button>
+<p>令牌配置在网关的 token / tokenFile 里，向运维索取。</p>
+</form></html>`
+  res.writeHead?.(401, { 'content-type': 'text/html; charset=utf-8' })
+  res.end?.(body)
 }
 
 /** Require a non-empty string. */

@@ -62,13 +62,47 @@ try {
   rmSync(temp, { recursive: true, force: true })
 }
 
-for (const marker of ['/orphans', '/adapter', '/mode', '/reply', '/label']) {
+for (const marker of ['/orphans', '/adapter', '/mode', '/reply', '/label',
+  '/health', '/dead', '/replay', '/retention', '/audit', '/usage', '/whoami', '/alerts']) {
   if (!script.includes(marker)) {
     console.error(`FAIL panel script is missing ${marker}`)
     process.exit(1)
   }
 }
 console.log('PASS panel wires every endpoint')
+
+// 运维视图是这一阶段新加的东西：按钮、重放入口、保留期执行入口都得在生成的 HTML 里，
+// 少一个页面看着正常但那一块没法用。
+for (const marker of ['id="ops-open"', "data-replay=", "data-replay-all=", 'id="ops-purge"', 'id="ops-scan"', 'id="ops-usage"', '死信', '数据保留', '用量', '自动清理', 'id="role-tag"', '告警']) {
+  if (!response.body.includes(marker)) {
+    console.error(`FAIL panel markup is missing ${marker}`)
+    process.exit(1)
+  }
+}
+console.log('PASS panel exposes the ops view')
+
+// 运维视图读的是这四个端点的字段名。字段改名而 UI 不改，页面不会报错，
+// 只会显示"未启用/没有"——所以在这里把契约钉住。
+{
+  const expect = async (url, keys, label) => {
+    const res = { code: 0, body: '', writeHead(code) { this.code = code }, end(body) { this.body = body } }
+    await gateway.handleHttp({ method: 'GET', url, headers: {} }, res)
+    const body = JSON.parse(res.body)
+    for (const key of keys) {
+      if (!(key in body)) {
+        console.error(`FAIL ${label} is missing ${key}`)
+        process.exit(1)
+      }
+    }
+  }
+  await expect('/channel/health', ['ok', 'uptimeMs', 'store', 'lease', 'queues', 'checks'], 'health')
+  await expect('/channel/dead', ['inbox'], 'dead letters')
+  await expect('/channel/retention', ['dryRun', 'archive', 'purge', 'limits'], 'retention plan')
+  await expect('/channel/audit', ['entries'], 'audit log')
+  await expect('/channel/usage?days=7', ['days', 'pricing', 'totals', 'rows'], 'usage report')
+  await expect('/channel/alerts?limit=5', ['status', 'entries'], 'alert feed')
+  console.log('PASS ops view endpoints keep their shape')
+}
 
 // ── 运维控制台：/ops/panel 的内联脚本同样用模板字符串拼，语法错只会在浏览器里炸。
 {

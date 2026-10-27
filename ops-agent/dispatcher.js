@@ -22,6 +22,7 @@ import { appendFile, mkdir, readFile } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { defaultPaths } from './paths.js'
+import { parseAccounts, scopeFor } from './scope.js'
 
 /** Cordis function-plugin name. */
 export const name = 'ops-dispatch'
@@ -74,6 +75,9 @@ export function createDispatcher(ctx, config) {
   const adminId = typeof config?.adminId === 'string' && config.adminId !== '' ? config.adminId : undefined
   const fetchImpl = config?.fetch ?? fetch
   const stateFile = requireAbsolute(config?.stateFile ?? path.join(paths.data, 'ops-state.json'), 'stateFile')
+  // 账号表：工单里的 account 靠它翻译成"能碰哪些命名空间"。
+  // 不配 = 不做限制（与重构前一致）；配了之后，没写账号或不认识的账号取证一律被拒。
+  const accounts = parseAccounts(config?.accounts)
 
   // 协同开关：默认开启。管理员在面板关掉之后，客服仍然照常工作，只是不再有运维可派。
   // 状态落盘，重启 dsh 不会自己又打开。
@@ -89,6 +93,8 @@ export function createDispatcher(ctx, config) {
   const incidents = new Map()
   /** proposalId -> change proposal. */
   const proposals = new Map()
+  /** opsSessionId -> 该工单的账号作用域（cluster 工具每次调用都来问这里）。 */
+  const scopes = new Map()
   /** sessionId -> assistant text of the running turn. */
   const buffers = new Map()
 
@@ -104,6 +110,7 @@ export function createDispatcher(ctx, config) {
       throw new Error('ops_handoff needs the requesting session')
     }
     const normalized = normalizeTask(task)
+    const scope = scopeFor(accounts, normalized.account)
     const incidentId = normalized.incidentId ?? givenId ?? `INC-${stamp()}-${shortId()}`
     const opsSessionId = `ops-${randomUUID()}`
     const selection = ctx.agentDefaultModel.currentSelection()
@@ -134,12 +141,14 @@ export function createDispatcher(ctx, config) {
       finishedAt: null,
       turns: 0,
       task: normalized,
+      scope,
       result: null,
       messages: [],
       archived: false,
     }
     tasks.set(opsSessionId, record)
     incidents.set(incidentId, record)
+    scopes.set(opsSessionId, scope)
     arm(record)
 
     handle.agent.followup({
@@ -150,6 +159,12 @@ export function createDispatcher(ctx, config) {
     })
 
     await ledgerAppend({ kind: 'dispatch', incidentId, opsSessionId, requesterSessionId, task: normalized })
+    if (scope.configured === true && (scope.unbound === true || scope.unknown === true)) {
+      // 不拦派单：运维至少要能告诉客服"缺账号信息"/"账号不认识"，
+      // 但取证已经注定被拒，记一条便于排查。
+      ctx.logger?.warn?.(`ops-dispatch: incident ${incidentId} has no usable account scope: ${
+        scope.unbound === true ? 'task.account is empty' : `unknown account "${scope.account}"`}`)
+    }
     return { incidentId, opsSessionId, state: 'dispatched' }
   }
 
@@ -502,6 +517,7 @@ export function createDispatcher(ctx, config) {
     if (record?.timer !== undefined) clearTimeout(record.timer)
     incidents.delete(incidentId)
     if (typeof opsSessionId === 'string') tasks.delete(opsSessionId)
+    if (typeof opsSessionId === 'string') scopes.delete(opsSessionId)
     await ledgerAppend({ kind: 'delete', incidentId, by, opsSessionId, requesterSessionId })
     return {
       ok: true,
@@ -549,6 +565,14 @@ export function createDispatcher(ctx, config) {
     snapshot,
     ledger,
     getTask: sessionId => tasks.get(sessionId),
+    /**
+     * 这张工单的账号作用域。
+     *
+     * cluster 工具按会话 id 来问：一个工单一个运维会话，所以"会话"就是"工单"。
+     * 未知会话返回 undefined——那是"不在任何工单里"，工具侧按不限制处理。
+     */
+    scopeFor: sessionId => scopes.get(sessionId),
+    accounts,
     getIncident: incidentId => incidents.get(incidentId),
     listProposals: () => [...proposals.values()],
     dispose() {
@@ -556,6 +580,7 @@ export function createDispatcher(ctx, config) {
       tasks.clear()
       incidents.clear()
       buffers.clear()
+      scopes.clear()
     },
   }
 }

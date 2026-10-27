@@ -8,6 +8,7 @@
  *
  * @module @local/dsh-ops-agent/metrics
  */
+import { checkMetricsScope } from './promql.js'
 
 /** Cordis function-plugin name. */
 export const name = 'ops-metrics-tool'
@@ -28,7 +29,9 @@ const MAX_RANGE_SECONDS = 24 * 60 * 60
  * @param config - `prometheusUrl`, `grafanaUrl`, `grafanaToken`, `datasourceUid`, `timeoutMs`.
  */
 export function apply(ctx, config) {
-  const metrics = createMetrics(config)
+  // 作用域在调用时现问：派单器可能晚于本插件挂载，缓存下来会一直是 undefined。
+  const scopeOf = sessionId => ctx.get?.('opsDispatch')?.scopeFor?.(sessionId)
+  const metrics = createMetrics(config, { scopeOf })
   ctx.tools.register(tool(metrics))
 }
 
@@ -38,7 +41,8 @@ export function apply(ctx, config) {
  * @param config - deployment configuration.
  * @returns accessor with `query` and `status`.
  */
-export function createMetrics(config) {
+export function createMetrics(config, options = {}) {
+  const scopeOf = typeof options.scopeOf === 'function' ? options.scopeOf : () => undefined
   const prometheusUrl = normalizeBase(config?.prometheusUrl)
   const grafanaUrl = normalizeBase(config?.grafanaUrl)
   const datasourceUid = typeof config?.datasourceUid === 'string' && config.datasourceUid.trim() !== ''
@@ -71,8 +75,13 @@ export function createMetrics(config) {
     }
   }
 
+  /** 本会话所属的账号作用域（没有就是 undefined，不限制）。 */
+  function scopeFor(sessionId) {
+    return scopeOf(sessionId)
+  }
+
   /** Run one query. */
-  async function query(args) {
+  async function query(args, scope) {
     const base = endpoint()
     if (base === undefined) {
       return { ok: false, configured: false, error: status().hint, data: null }
@@ -80,6 +89,8 @@ export function createMetrics(config) {
     const promql = typeof args?.query === 'string' ? args.query.trim() : ''
     if (promql === '') throw new Error('ops_metrics: query must be a non-empty string')
     if (promql.length > MAX_QUERY) throw new Error(`ops_metrics: query longer than ${MAX_QUERY} characters`)
+    // 在发请求之前拦：先查了再过滤等于没过滤，数据已经出网了。
+    checkMetricsScope(promql, scope)
 
     const minutes = Number(args?.minutes ?? 0)
     const rangeQuery = Number.isFinite(minutes) && minutes > 0
@@ -138,7 +149,7 @@ export function createMetrics(config) {
     }
   }
 
-  return { query, status, endpoint }
+  return { query, status, endpoint, scopeFor }
 }
 
 /** `ops_metrics` definition. */
@@ -184,10 +195,25 @@ function tool(metrics) {
           : `metrics unavailable: ${value.error ?? 'unknown error'}`,
       }],
     },
-    async execute(args) {
-      return metrics.query(args)
+    async execute(args, exec) {
+      return metrics.query(args, sessionScope(metrics, exec))
     },
   }
+}
+
+/**
+ * 从工具执行上下文里取本会话的作用域。
+ *
+ * 没有 `exec`（模型在会话外被调用，或测试直接调工具）时返回 undefined ——
+ * 与 k8s 工具保持一致：不限制，但也不会假装有作用域。
+ *
+ * @param metrics - the accessor.
+ * @param exec - tool execution context.
+ * @returns the account scope, or undefined.
+ */
+function sessionScope(metrics, exec) {
+  const sessionId = exec?.agent?.session?.id
+  return sessionId === undefined ? undefined : metrics.scopeFor(sessionId)
 }
 
 /** Normalize a base URL, rejecting anything that is not http(s). */

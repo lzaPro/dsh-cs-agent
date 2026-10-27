@@ -1,0 +1,41 @@
+# 客服 / 运维插件的本地基础设施。
+#
+# 只跑一个 Postgres：会话、消息、工单、投递、审计都落在这里。
+# 知识条目正文不在这里——它是 git 里的 JSON 文件，数据库只存派生数据和事务数据。
+#
+#   起库：    ./scripts/db-up.sh
+#   停库：    ./scripts/db-down.sh
+#   连进去：  docker exec -it cs-agent-postgres psql -U cs_agent -d cs_agent
+#
+# 端口默认 55432：避开本机常见的 5432，也避开别的项目已经占用的端口。
+# 需要改的话在 .env.db 里写 DSH_DB_PORT。
+name: cs-agent
+
+services:
+  postgres:
+    # 镜像可覆盖：离线环境或已有本地镜像时，写 DSH_DB_IMAGE 指过去。
+    image: ${DSH_DB_IMAGE:-postgres:16-alpine}
+    container_name: cs-agent-postgres
+    restart: unless-stopped
+    ports:
+      - "${DSH_DB_PORT:-55432}:5432"
+    environment:
+      POSTGRES_DB: ${DSH_DB_NAME:-cs_agent}
+      POSTGRES_USER: ${DSH_DB_USER:-cs_agent}
+      POSTGRES_PASSWORD: ${DSH_DB_PASSWORD:-cs_agent_dev}
+      # 固定编码与排序规则：否则不同机器上的 order by 结果可能不一致。
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      # 挂在父目录而不是 .../data：16 用 <父>/data，18+ 用 <父>/18/docker，
+      # 这样换镜像版本不会因为数据目录布局变化而拒绝启动。
+      - cs-agent-pgdata:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DSH_DB_USER:-cs_agent} -d ${DSH_DB_NAME:-cs_agent}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+volumes:
+  cs-agent-pgdata:
+    name: cs-agent-pgdata

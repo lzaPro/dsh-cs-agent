@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="template" content="HTML_Template-v3.15.0">
+<meta name="template-applied" content="2026-10-27">
+<title>客服 Agent 插件重构验收报告</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛠️</text></svg>" type="image/svg+xml">
+<style>
+/* ========== 核心布局 ========== */
+:root {
+  --sidebar-w: 220px;
+  --cc: #da7756;
+  --cc-light: #fef0ea;
+  --cc-border: #e8b89d;
+  --oc: #1565c0;
+  --oc-light: #e3f2fd;
+  --oc-border: #90caf9;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  color: #333; background: #fff; margin: 0; padding: 0;
+  font-size: 14px;
+}
+
+/* ========== 阅读模式 ========== */
+.read-mode { display: flex; justify-content: center; }
+.read-mode .page-container { display: flex; max-width: 1300px; width: 100%; }
+
+/* 阅读模式 - 左侧目录栏 */
+#toc-sidebar {
+  position: sticky; top: 0; width: var(--sidebar-w);
+  flex-shrink: 0; background: #f5f5f5;
+  height: 100vh;
+  display: flex; flex-direction: column;
+  border-right: 1px solid #e0e0e0;
+  padding: 0 12px; z-index: 100;
+  box-shadow: 1px 0 4px rgba(0,0,0,0.04);
+}
+.sidebar-logo {
+  display: flex; align-items: center; gap: 10px;
+  padding: 16px 8px; border-bottom: 1px solid #e0e0e0;
+  flex-shrink: 0;
+}
+.sidebar-logo .logo-icon { font-size: 28px; }
+.sidebar-logo .logo-word { font-size: 16px; font-weight: 700; color: #1565c0; }
+.sidebar-logo .logo-sub { font-size: 11px; color: #999; }
+#toc-sidebar nav { flex: 1; overflow-y: auto; padding: 8px 0; }
+#toc-sidebar nav a {
+  display: block; font-size: 14px; color: #666;
+  text-decoration: none; padding: 5px 8px;
+  border-radius: 4px; margin-bottom: 2px;
+  transition: all 0.15s; border-left: 3px solid transparent;
+  cursor: pointer;
+}
+#toc-sidebar nav a:hover { background: #f0f4ff; color: #1565c0; }
+#toc-sidebar nav a.active { background: #e3f0ff; color: #1565c0; font-weight: 600; border-left-color: #1565c0; }
+#toc-sidebar nav a.toc-h3 { padding-left: 20px; font-size: 13px; }
+#toc-sidebar nav a.toc-rev { margin-top: 12px; padding-top: 10px; border-top: 1px dashed #d0d0d0; color: #888; font-size: 13px; }
+.sidebar-footer {
+  padding: 12px 0; font-size: 12px; color: #999;
+  border-top: 1px solid #e0e0e0; text-align: center;
+  flex-shrink: 0;
+}
+
+/* 阅读模式 - 右侧主内容区 */
+#main-content { flex: 1; padding: 20px 40px; max-width: 1000px; cursor: text; outline: none; }
+#main-content > p:not(.num-item):not(.title-meta) { margin-left: 15px; }
+#main-content > table { margin-left: 15px; }
+h1 { color: #1565c0; font-size: 26px; font-weight: 700; margin: 0; }
+h1.doc-title-wrap {
+  text-align: center; padding: 50px 20px; margin: 0 0 50px 0;
+  border: 2px solid #1565c0; border-radius: 8px;
+  background: #e3f2fd;
+  position: relative;
+  display: inline-block; width: 100%;
+  box-sizing: border-box;
+}
+
+.meta { text-align: center; color: #666; font-size: 14px; margin: 14px 0 20px; }
+.rule-item {
+  background: #f0f4ff; border-left: 4px solid #1565c0; border-radius: 4px;
+  padding: 8px 14px; margin: 12px 0 8px; font-weight: 600; font-size: 15px; color: #1a1a1a;
+}
+.rule-item-num { color: #1565c0; margin-right: 8px; }
+ol.sub-items { margin-top: 6px; padding-left: 0; list-style-type: none; counter-reset: sub-counter; }
+ol.sub-items > li { counter-increment: sub-counter; display: flex; margin-bottom: 4px; margin-left: calc(15px + 2em); }
+ol.sub-items > li::before { content: counter(sub-counter, lower-alpha) ") "; font-weight: 700; color: #333; min-width: 2em; flex-shrink: 0; }
+ol.sub-items > li > span.sub-text { flex: 1; min-width: 0; }
+ul.sub-items-unordered { margin-top: 6px; padding-left: 0; list-style: none; }
+ul.sub-items-unordered > li { display: flex; margin-bottom: 4px; margin-left: calc(15px + 2em); }
+ul.sub-items-unordered > li::before { content: "•"; color: #333; min-width: 1.5em; flex-shrink: 0; }
+ul.sub-items-unordered > li > span.sub-text { flex: 1; min-width: 0; }
+p.num-item { margin: 10px 0 6px 15px; line-height: 1.7; }
+p.num-item > strong { font-weight: 700; margin-right: 0.2em; }
+p.num-item + p.num-item { margin-top: 12px; }
+p.num-item code,
+ol.sub-items code,
+ul.sub-items-unordered code,
+td code {
+  word-break: normal;
+  overflow-wrap: break-word;
+  white-space: normal;
+}
+.title-meta {
+  text-align: center; color: #888; font-size: 14px; margin-top: 14px; margin-bottom: 0;
+  font-weight: 400;
+}
+h2 { color: #1565c0; border-bottom: 2px solid #1565c0; padding-bottom: 4px; margin-top: 32px; scroll-margin-top: 20px; font-size: 18px; }
+h3 { color: #1a1a1a; font-size: 16px; font-weight: 700; margin: 24px 0 10px; padding: 0 0 6px 10px; border-left: 3px solid #1565c0; border-bottom: 1px solid #ddd; scroll-margin-top: 20px; }
+table { width: 100%; border-collapse: collapse; background: white; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.08); margin: 12px 0; }
+th { background: #e8eef6; color: #1565c0; padding: 8px 10px; text-align: left; font-size: 14px; font-weight: 600; }
+td { padding: 6px 10px; border-bottom: 1px solid #eee; font-size: 14px; }
+tr:hover td { background: #f8f9fa; }
+.good { color: #27ae60; font-weight: bold; }
+.medium { color: #f39c12; font-weight: bold; }
+.bad { color: #e74c3c; font-weight: bold; }
+p { margin: 8px 0; line-height: 1.6; }
+
+/* 报告专用 */
+.cc-color { color: var(--cc); font-weight: 600; }
+.oc-color { color: var(--oc); font-weight: 600; }
+.tag {
+  display: inline-block; padding: 2px 8px; border-radius: 4px;
+  font-size: 11px; font-weight: 600; margin-right: 4px;
+}
+.tag.cc-tag { background: var(--cc-light); color: var(--cc); }
+.tag.oc-tag { background: var(--oc-light); color: var(--oc); }
+
+.cmp-table th:nth-child(2) { background: var(--cc); color: #fff; }
+.cmp-table th:nth-child(3) { background: var(--oc); color: #fff; }
+.cmp-table .cat td {
+  background: #f5f5f5; font-weight: 700; font-size: 13px;
+  color: #546e7a; padding: 6px 10px;
+}
+
+.key-box {
+  padding: 14px 18px; border-radius: 8px; margin: 12px 0 12px 15px;
+  font-size: 14px; line-height: 1.6;
+}
+.key-box.insight { background: #fff8e1; border-left: 4px solid #ffc107; }
+.key-box.oc-insight { background: var(--oc-light); border-left: 4px solid var(--oc); }
+.key-box.cc-insight { background: var(--cc-light); border-left: 4px solid var(--cc); }
+
+.code-block {
+  background: #1e1e1e; color: #d4d4d4;
+  border-radius: 8px; padding: 16px 20px; margin: 10px 0 10px 15px;
+  font-family: "Fira Code", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+  font-size: 13px; line-height: 1.6; overflow-x: auto;
+  white-space: pre;
+}
+.code-block .kw { color: #569cd6; }
+.code-block .fn { color: #dcdcaa; }
+.code-block .str { color: #ce9178; }
+.code-block .cm { color: #6a9955; }
+.code-block .num { color: #b5cea8; }
+
+/* 滚动条美化 */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #f1f1f1; }
+::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #aaa; }
+</style>
+<!-- Mermaid 流程图 -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+</head>
+<body>
+
+<!-- ========== 阅读模式（默认） ========== -->
+<div class="read-mode" id="readMode">
+
+  <div class="page-container">
+    <!-- 左侧目录栏 -->
+    <div id="toc-sidebar">
+      <div class="sidebar-logo">
+        <div class="logo-icon">🛠️</div>
+        <div>
+          <div class="logo-word" id="sidebar-title">重构验收</div>
+        </div>
+      </div>
+      <nav id="toc-nav">
+        <a data-section="sec-1">1 摘要</a>
+<a data-section="sec-1-1" class="toc-h3">1.1 关键数字</a>
+<a data-section="sec-1-2" class="toc-h3">1.2 交付的五类能力</a>
+<a data-section="sec-1-3" class="toc-h3">1.3 一句提醒</a>
+<a data-section="sec-2">2 出发点：重构前的真实故障</a>
+<a data-section="sec-3">3 十四个阶段：每个阶段解决了什么</a>
+<a data-section="sec-3-1" class="toc-h3">3.1 三个阶段值得单独讲</a>
+<a data-section="sec-4">4 代码结构的变化</a>
+<a data-section="sec-4-1" class="toc-h3">4.1 cs-agent 根目录</a>
+<a data-section="sec-4-2" class="toc-h3">4.2 数据库表与迁移</a>
+<a data-section="sec-5">5 可选性：不启数据库行为不变</a>
+<a data-section="sec-5-1" class="toc-h3">5.1 开关矩阵</a>
+<a data-section="sec-6">6 测试：从 507 条到 1093 条</a>
+<a data-section="sec-6-1" class="toc-h3">6.1 基线对比</a>
+<a data-section="sec-6-2" class="toc-h3">6.2 新增的检查入口</a>
+<a data-section="sec-6-3" class="toc-h3">6.3 门禁设计要点</a>
+<a data-section="sec-6-4" class="toc-h3">6.4 被测试抓出的真 bug</a>
+<a data-section="sec-7">7 怎么部署</a>
+<a data-section="sec-7-1" class="toc-h3">7.1 三种部署形态</a>
+<a data-section="sec-7-2" class="toc-h3">7.2 起库与迁移</a>
+<a data-section="sec-7-3" class="toc-h3">7.3 主要配置项</a>
+<a data-section="sec-7-4" class="toc-h3">7.4 端点一览</a>
+<a data-section="sec-7-5" class="toc-h3">7.5 运维面板</a>
+<a data-section="sec-8">8 关键设计决策与理由</a>
+<a data-section="sec-9">9 还没做的，以及已知风险</a>
+<a data-section="sec-9-1" class="toc-h3">9.1 明确没做</a>
+<a data-section="sec-9-2" class="toc-h3">9.2 已知风险</a>
+<a data-section="sec-10">10 附：怎么自己验一遍</a>
+<a data-section="sec-rev" class="toc-rev">修订记录</a>
+        <a data-section="sec-rev" class="toc-rev">修订记录</a>
+      </nav>
+      <div class="sidebar-footer">
+        <span id="sidebar-copyright">© 2026 客服插件重构验收</span>
+      </div>
+    </div>
+
+    <!-- 右侧主内容区 -->
+    <div id="main-content" contenteditable="true">
+      <h1 class="doc-title-wrap" id="doc-title-wrap"><span id="doc-title">客服 Agent 插件重构验收报告</span><div class="title-meta"><span id="doc-author"></span> <span id="doc-date">2026-10-27</span> | <span id="doc-version">v1.0</span></div></h1>
+
+      <h2 id="sec-1">1 摘要</h2>
+
+<p class="num-item"><strong>1）</strong>这轮改造的目标不是"代码更漂亮"，而是<strong>让这套客服插件能承接真实的客服流量</strong>。重构前它是一套能跑通演示的骨架：消息能进来、模型能回、面板能看，但几乎所有"真实系统该有"的保障都缺——消息会因为一次图片下载超时丢掉，回复会因为适配器抖一下永久不发，出了事没有任何 id 能把一条消息串起来，删客户数据没有任何手段。</p>
+
+<p class="num-item"><strong>2）</strong>十四个阶段全部提交，每个阶段都配一套可复跑的验收。基线是一条命令跑 21 步、507 条断言；现在是 36 步、<strong>944 条断言（不连库）/ 1093 条（连库）</strong>，全部通过。</p>
+
+<div class="key-box oc-insight">
+  <strong>一句话结论：</strong>重构把"消息不丢、回复不重、故障可追、数据可管、发布可验"这五件事从"没做"变成了"有代码、有测试、有文档、能回滚"。剩下没做的是成本核算与发布管理，以及若干规模上限。
+</div>
+
+<h3 id="sec-1-1">1.1 关键数字</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:34%">指标</th><th style="width:22%">重构前</th><th style="width:22%">现在</th><th>说明</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>提交数（本分支）</td><td>—</td><td><strong>14</strong></td><td>P1–P14，每阶段一个原子提交 + 一份阶段文档</td></tr>
+    <tr><td>改动文件 / 行数</td><td>—</td><td>78 个 / <strong>+11208 −684</strong></td><td><code>git diff --stat</code> 基线对比</td></tr>
+    <tr><td>verify-all 步骤</td><td>21</td><td><strong>36</strong></td><td>新增 15 个检查入口</td></tr>
+    <tr><td>断言总数</td><td>507</td><td><strong>944 / 1093</strong></td><td>1093 为启用数据库时的数量</td></tr>
+    <tr><td>全量检查耗时</td><td>18.16s</td><td><strong>37.97s</strong></td><td>多出来的是 5 个存储/队列/租约测试</td></tr>
+    <tr><td>数据库表 / 迁移</td><td>0 / 0</td><td><strong>10 / 5</strong></td><td>全部可选，不启库行为不变</td></tr>
+    <tr><td><code>cs-agent</code> 根目录模块</td><td>4 个 / 2069 行</td><td><strong>17 个 / 4825 行</strong></td><td>新增 13 个模块，<code>panel.js</code> 从网关拆出</td></tr>
+    <tr><td><code>gateway.js</code></td><td>1779 行</td><td>1952 行</td><td>拆走 519 行面板，但装进了新能力</td></tr>
+    <tr><td>冒烟测试文件（<code>cs-agent</code>）</td><td>4</td><td><strong>15</strong></td><td>每项新能力一个独立入口</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec-1-2">1.2 交付的五类能力</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:16%">能力</th><th style="width:34%">重构前</th><th>现在</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>消息不丢</strong></td>
+      <td>入站在一个函数里做完下载附件、建会话、唤醒模型；任何一步抛错，这条客户消息就没了，平台也不会重投</td>
+      <td>先落库再处理（<code>inbox</code> 队列 + 幂等键 + 退避重试）；处理失败仍返回"已受理"，故障恢复后自动补上</td>
+    </tr>
+    <tr>
+      <td><strong>回复不重</strong></td>
+      <td>回复只追加一条 jsonl 记账，然后单次 POST；失败只打一行 warn</td>
+      <td><code>outbox</code> 队列：幂等键派生自内容、首投失败入队、退避 2s→8s→32s→2m、5 次后标 <code>dead</code> 并可人工重放</td>
+    </tr>
+    <tr>
+      <td><strong>故障可追</strong></td>
+      <td>日志没有关联 id；客户说"刚才那条没回"只能靠时间戳猜</td>
+      <td>12 位 <code>traceId</code> 用 <code>AsyncLocalStorage</code> 贯穿入站→模型→回复→归档→审计；<code>/health</code> 区分"进程活着"与"现在能不能干活"</td>
+    </tr>
+    <tr>
+      <td><strong>数据可管</strong></td>
+      <td>会话映射整份重写、知识条目永远是文件、删数据没有手段</td>
+      <td>会话/消息/用量/工单/审计进库（可选）；保留期归档 + 清除 + 按客户删除，全部留审计；<code>audit_log</code> 与 <code>ticket_events</code> 由数据库触发器保证不可改</td>
+    </tr>
+    <tr>
+      <td><strong>发布可验</strong></td>
+      <td>改坏了没人知道；谁都能匿名删会话、改 QQ 凭证</td>
+      <td>检索评测逐条比基线（哪条掉了一眼看到）；三角色访问控制；<code>npm pack</code> 自检（凭证不外发、入口不漏文件）</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3 id="sec-1-3">1.3 一句提醒</h3>
+
+<div class="key-box insight">
+  <strong>关于"结构变好了吗"：</strong><code>gateway.js</code> 从 1779 行涨到 1952 行。拆走了 519 行面板，但又装进了投递队列、受理队列、健康检查、审计、保留期、消息归档这些新能力——它们天然属于"这个网关"。这轮我优先保证<strong>能落地</strong>，可读性上只做了面板拆分这一刀。真要继续瘦身，下一步是把 21 条 HTTP 路由拆成独立路由模块（见 9 节）。
+</div>
+<h2 id="sec-2">2 出发点：重构前的真实故障</h2>
+
+<p class="num-item"><strong>1）</strong>下面每一条都不是"代码风格问题"，而是<strong>能造成客户损失或数据事故</strong>的具体缺陷。它们是我读 <code>cs-agent/gateway.js</code> 1779 行后逐条定位的，后面每个阶段都对着其中一到两条。</p>
+
+<table>
+  <thead>
+    <tr><th style="width:4%">#</th><th style="width:26%">现象</th><th style="width:30%">代码位置（重构前）</th><th>后果</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>入站消息会因为一次临时故障永久丢失</td>
+      <td><code>gateway.js:522-593</code> 的 <code>inbound()</code>：去重、限流、下载附件、建/恢复会话、落盘、唤醒模型、记去重窗口，全在一个同步函数里</td>
+      <td>4 张截图中第 3 张 <code>AbortSignal.timeout(8000)</code> 超时 → 整条消息抛错；适配器不重投 → 客户以为发了，客服从没看到</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>回复失败没有任何重试</td>
+      <td><code>gateway.js:596-637</code> 的 <code>emit()</code>：先 <code>appendFile</code> 写 jsonl，再单次 <code>fetch</code>；失败只 <code>warn</code> 后返回 <code>{delivered:false}</code></td>
+      <td>适配器重启 3 秒 → 模型答的话永久丢；jsonl 里躺着"发过"的记录，但客户没收到</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>会话状态是内存 Map + 整份文件重写</td>
+      <td><code>gateway.js:222-233</code> 的 <code>persist()</code> / <code>persistSeen()</code>：每条消息都把全部会话（去重窗口 2000 条）全量重写一遍</td>
+      <td>无写队列、无节流；并发写会互相覆盖；会话上万时每次提问都要重写整份文件</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>只能单进程单机</td>
+      <td><code>gateway.js:64-91</code> 的 <code>acquireDataLock()</code>：<code>&lt;data&gt;.lock</code> 写 PID，第二个进程直接拒绝启动</td>
+      <td>无法扩容、无法滚动发布；机器崩了锁文件（PID 被复用）可能挡住重启</td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>初始化有竞态</td>
+      <td><code>gateway.js:204-220</code> 的 <code>load()</code>：<strong>先置 <code>loaded = true</code>，再 <code>await</code> 读文件</strong></td>
+      <td>两条消息并发首次到达 → 第二个调用看到 <code>loaded</code> 已真但数据还没读完 → 重复建会话</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>出了事串不起来</td>
+      <td>全文件没有 traceId；日志是裸文本</td>
+      <td>客户报"晚上 8 点那条没回"，只能翻日志按时间猜是哪条、走到哪一步</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>鉴权只对了一半</td>
+      <td><code>gateway.js:1485-1488</code>：<code>if (token !== undefined)</code> 才校验 <code>Bearer</code> 头</td>
+      <td>配了令牌 → 浏览器打不开面板（浏览器不给页面请求加 <code>Authorization</code>）；不配令牌 → <code>/delete</code>、<code>/config</code>（改 QQ 凭证）、<code>/retention</code>（删客户数据）全部匿名可调</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td>删除客户数据没有手段</td>
+      <td><code>scripts/retention.mjs</code> 只处理运行时目录的 json 文件</td>
+      <td>客户要求删除时做不到；合规上是硬伤</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="key-box insight">
+  <strong>判断：</strong>这 8 条里有 5 条是"故障发生时数据会丢或会重复"——这是客服系统最不能忍的一类错。所以重构顺序不是"先把代码拆干净"，而是<strong>先补可靠性，再补可观测，最后补运营手段</strong>。
+</div>
+
+<h2 id="sec-3">3 十四个阶段：每个阶段解决了什么</h2>
+
+<p class="num-item"><strong>1）</strong>每个阶段都是一个独立提交，都写了<strong>目标 / 交付物 / 关键决策 / 验收命令 / 已知限制 / 回滚方式 / 下一步</strong>七节文档（<code>docs/refactor-pN.md</code>）。这样任何一个阶段都能单独回退，也能被下一个人接手。</p>
+
+<table>
+  <thead>
+    <tr><th style="width:6%">阶段</th><th style="width:9%">提交</th><th style="width:31%">解决的真实故障</th><th style="width:26%">新增</th><th>验收</th></tr>
+  </thead>
+  <tbody>
+    <tr class="cat"><td colspan="5">一、地基：先把"能存下来"这件事做实</td></tr>
+    <tr>
+      <td><strong>P1</strong></td><td><code>46cdf11</code></td>
+      <td>没有任何持久层：会话是内存 Map，删了进程就没了；也无法多实例</td>
+      <td><code>db/pool.mjs</code>、<code>db/migrate.mjs</code>、<code>db-smoke.mjs</code>、<code>0001_init.sql</code>（9 张表）、<code>docker-compose.yml</code>、<code>scripts/db-up.sh</code></td>
+      <td>60 条；<code>bash scripts/db-up.sh</code> 一条命令起库并迁移</td>
+    </tr>
+    <tr>
+      <td><strong>P2</strong></td><td><code>66e4a99</code></td>
+      <td>故障 #3（整份重写）、#5（<code>load()</code> 竞态）、#4（无法多实例，第一步）</td>
+      <td><code>store.js</code>、<code>store-pg.js</code>、<code>0002</code> 迁移、<code>store-smoke.mjs</code></td>
+      <td>28 / 56 条；<code>gateway-smoke</code> 109 条逐条不变</td>
+    </tr>
+    <tr class="cat"><td colspan="5">二、可靠性：故障发生时不能丢、不能重</td></tr>
+    <tr>
+      <td><strong>P3</strong></td><td><code>1d986d8</code></td>
+      <td>故障 #2（回复只记账不重发）</td>
+      <td><code>outbox.js</code>、<code>outbox-pg.js</code>、<code>outbox-retry.js</code>、<code>outbox-smoke.mjs</code></td>
+      <td>30 / 52 条；<code>emit</code> 无 webhook 时行为逐字节不变</td>
+    </tr>
+    <tr>
+      <td><strong>P4</strong></td><td><code>d18600b</code></td>
+      <td>故障 #4（PID 锁跨不了机器、假死检测不出来）</td>
+      <td><code>lease.js</code>、<code>0003_gateway_lease.sql</code>、<code>lease-smoke.mjs</code></td>
+      <td>8 / 25 条；租约 30s TTL + 10s 心跳</td>
+    </tr>
+    <tr>
+      <td><strong>P5</strong></td><td><code>9d2558d</code></td>
+      <td>故障 #1（入站一步失败即丢消息）</td>
+      <td><code>inbox.js</code>、<code>0004_inbox.sql</code>、<code>inbox-smoke.mjs</code></td>
+      <td>26 / 38 条；含幂等键修复（见 6.4）</td>
+    </tr>
+    <tr class="cat"><td colspan="5">三、可观测与安全：出问题时看得见、拦得住</td></tr>
+    <tr>
+      <td><strong>P6</strong></td><td><code>b6502b9</code></td>
+      <td>故障 #6（串不起来）+ 没有"能不能干活"的判断</td>
+      <td><code>trace.js</code>、<code>GET /health</code>、<code>health-smoke.mjs</code></td>
+      <td>22 / 28 条；12 位 traceId 贯穿全链路</td>
+    </tr>
+    <tr>
+      <td><strong>P7</strong></td><td><code>7648e0a</code></td>
+      <td>租约被接管后原实例还在写 → 两个实例同时唤醒模型、客户收两条</td>
+      <td><code>assertWritable()</code>、<code>LEASE_LOST → 503</code>、<code>lease-guard-smoke.mjs</code></td>
+      <td>18 条；顺带修掉一个会崩进程的 unhandled rejection</td>
+    </tr>
+    <tr>
+      <td><strong>P13</strong></td><td><code>ea2ee89</code></td>
+      <td>故障 #7（鉴权两个方向都错、令牌只能写在 YAML 里）</td>
+      <td><code>auth.js</code>、登录页、<code>auth-smoke.mjs</code></td>
+      <td>45 条；三角色 + cookie + <code>tokenFile</code></td>
+    </tr>
+    <tr class="cat"><td colspan="5">四、运营手段：能查、能改、能删</td></tr>
+    <tr>
+      <td><strong>P8</strong></td><td><code>4cc1fe3</code></td>
+      <td><code>messages</code>/<code>usage_daily</code> 表建好一直空着，"上周那人说了什么""这个月多少 token"答不上来</td>
+      <td><code>time.js</code>、<code>0005_message_tokens.sql</code>、<code>message-smoke.mjs</code>、<code>GET /messages</code></td>
+      <td>26 / 41 条；含时区 bug 修复</td>
+    </tr>
+    <tr>
+      <td><strong>P9</strong></td><td><code>7099e9a</code></td>
+      <td>死信看不见、推不回去、谁推的没记录</td>
+      <td><code>audit.js</code>、<code>GET /dead</code>、<code>POST /replay</code>、<code>GET /audit</code>、<code>dead-smoke.mjs</code></td>
+      <td>23 / 35 条；已发出的永不被重放</td>
+    </tr>
+    <tr>
+      <td><strong>P10</strong></td><td><code>57dfdd7</code></td>
+      <td>故障 #8（没有保留期、删不掉客户数据）</td>
+      <td><code>retention.js</code>、<code>GET|POST /retention</code>、<code>purge-smoke.mjs</code></td>
+      <td>37 / 41 条；归档可逆、清除留审计</td>
+    </tr>
+    <tr class="cat"><td colspan="5">五、交付质量：改坏了要知道，发出去要干净</td></tr>
+    <tr>
+      <td><strong>P11</strong></td><td><code>571abb7</code></td>
+      <td>519 行面板 HTML/JS 塞在网关模板字符串里；上面这些能力只能 curl</td>
+      <td><code>panel.js</code>、运维视图（健康/死信/保留/审计四卡）、<code>panel-dom-smoke.mjs</code></td>
+      <td>23 条；迁移用 HTML 逐字节 <code>diff</code> 证明零漂移</td>
+    </tr>
+    <tr>
+      <td><strong>P12</strong></td><td><code>8390925</code></td>
+      <td>改坏了没人知道；<code>--strict</code> 要求满分，库一大就永远红</td>
+      <td><code>eval-gate.mjs</code>、<code>rag-baseline.json</code>、<code>reply-leaks.mjs</code>、<code>eval-gate-smoke.mjs</code></td>
+      <td>27 + 27 条；逐条回退检测</td>
+    </tr>
+    <tr>
+      <td><strong>P14</strong></td><td><code>0076783</code></td>
+      <td><code>npm pack</code> 把 <code>adapter/.env.local</code>（真实 QQ AppSecret）打进包里；<code>kb-core</code> 发出去装不上</td>
+      <td><code>packaging-smoke.mjs</code>、7 份子目录 <code>.npmignore</code>、补齐 3 个包的 <code>files[]</code></td>
+      <td>77 条；真装一次并 import 每个入口</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3 id="sec-3-1">3.1 三个阶段值得单独讲</h3>
+
+<p class="num-item"><strong>1）P5 是最能说明"为什么顺序是这样"的一个阶段。</strong>入站受理的改造看起来只是"加个队列"，但它迫使一个原本模糊的问题变清楚：<strong>同一条平台消息重投两次，怎么认出来是同一件事？</strong>第一版实现把整个信封（含 <code>at</code> 时间戳）哈希成幂等键——同一 <code>messageId</code> 每次重投算出的键都不一样，于是队列里排两条、客户收到两条一模一样的回复。这个 bug 是<em>写代码时自己发现的</em>，不是测试抓的；修法是把幂等键从"信封内容"改成"平台消息 id / 内容指纹"。</p>
+
+<p class="num-item"><strong>2）P7 暴露了一个隐藏的进程级隐患。</strong>给 <code>emit()</code> 加上"租约丢了就抛错"之后，<code>observe()</code> 里那三处 <code>void emit(...)</code> 立刻变成<strong>无人接管的 Promise rejection</strong>——Node 15 之后默认直接终止进程。也就是说：租约被接管的那一刻，整个网关会崩。修法是引入 <code>trackReply()</code> 统一收集在飞回复（顺带解决了"测试/优雅关停无法等待回复落定"的问题）。</p>
+
+<p class="num-item"><strong>3）P12 把"评测"从分数变成证据。</strong>原来的 <code>eval-rag.mjs --strict</code> 只回答"recall@1 是不是 100%"，改坏一条要自己一条条 diff 输出才能找到。门禁改成<strong>与基线逐条比对</strong>：基线里 <code>hit1:true</code> 的用例现在不中了，就直接报 <code>case X used to hit "Y" and now returns "Z"</code>。同时它会校验用例引用的知识条目真实存在——否则条目改名后门禁会静默失效，变成永远绿。</p>
+<h2 id="sec-4">4 代码结构的变化</h2>
+
+<p class="num-item"><strong>1）</strong>原则是<strong>新能力各自成文件，老网关只做接线</strong>。每个新模块都可以单独 import、单独测（<code>package.json</code> 里都挂了 <code>exports</code>），不需要把整个网关跑起来。</p>
+
+<h3 id="sec-4-1">4.1 <code>cs-agent</code> 根目录：4 个模块 → 17 个</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:26%">模块</th><th style="width:8%">行数</th><th style="width:10%">阶段</th><th>职责</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>gateway.js</code></td><td>1952</td><td>原有</td><td>插件入口、HTTP 路由、会话编排、模型交互。1779 → 1952（拆走面板 519，装进新能力约 692）</td></tr>
+    <tr><td><code>panel.js</code></td><td>708</td><td>P11</td><td>面板 HTML/CSS/JS + 运维视图；由 <code>panelHtml(route)</code> 生成</td></tr>
+    <tr><td><code>store.js</code> / <code>store-pg.js</code></td><td>272 / 308</td><td>P2/P8/P10</td><td>会话存储接口 + 两套实现（JSON 文件 / PostgreSQL）；消息归档、用量累加、按客户清除</td></tr>
+    <tr><td><code>outbox.js</code> / <code>outbox-pg.js</code> / <code>outbox-retry.js</code></td><td>248 / 221 / 46</td><td>P3/P5/P9</td><td>可靠投递队列：幂等、租约领取、退避、死信、重放；同一实现同时服务入站 <code>inbox</code></td></tr>
+    <tr><td><code>inbox.js</code></td><td>66</td><td>P5</td><td>入站受理队列（薄封装：复用 outbox，换数据库表与幂等键规则）</td></tr>
+    <tr><td><code>lease.js</code></td><td>174</td><td>P4</td><td>写入域租约：文件 PID 锁（单机）或数据库租约（多机，30s TTL + 心跳 + 接管检测）</td></tr>
+    <tr><td><code>auth.js</code></td><td>211</td><td>P13</td><td>三角色访问控制：public / inbound / admin；四种凭证来源；常量时间比较；令牌文件</td></tr>
+    <tr><td><code>audit.js</code></td><td>152</td><td>P9</td><td>审计双写（jsonl 底稿 + <code>audit_log</code> 表），表挂了也能查</td></tr>
+    <tr><td><code>retention.js</code></td><td>129</td><td>P10</td><td>保留期规划（纯函数）：归档 / 清除 / 按客户删除，配置写反会自动钳制</td></tr>
+    <tr><td><code>trace.js</code></td><td>33</td><td>P6</td><td>12 位 traceId + <code>AsyncLocalStorage</code> 上下文 + 日志前缀</td></tr>
+    <tr><td><code>time.js</code></td><td>15</td><td>P8</td><td>本地日期（避免 UTC 日把东八区凌晨记到前一天）</td></tr>
+    <tr><td><code>handoff.js</code> / <code>ocr.js</code> / <code>paths.js</code></td><td>98 / 161 / 31</td><td>原有</td><td>保持不变</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec-4-2">4.2 数据库：10 张表、5 个迁移</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:20%">表</th><th style="width:12%">迁移</th><th>用途与关键约束</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>conversations</code></td><td>0001 / 0002</td><td>会话映射（客户 ↔ DSH 会话）。<code>external_key</code> 唯一；<code>dsh_session_id</code> 部分唯一；预留 <code>tenant_id</code>/<code>account_id</code></td></tr>
+    <tr><td><code>messages</code></td><td>0001 / 0005</td><td>消息归档含 token 用量列；<code>platform_msg_id</code> 部分唯一（挡住重复归档）</td></tr>
+    <tr><td><code>usage_daily</code></td><td>0001 / 0005</td><td>按天 × 会话的轮数与 token；主键 <code>(day, conversation_id)</code></td></tr>
+    <tr><td><code>outbox</code></td><td>0001</td><td>回复投递队列。<code>idempotency_key</code> 唯一；五态 <code>pending/sending/sent/failed/dead</code></td></tr>
+    <tr><td><code>inbox</code></td><td>0004</td><td>入站受理队列。结构同 outbox，<code>sent_at</code> 表示"处理完成"</td></tr>
+    <tr><td><code>inbound_dedupe</code></td><td>0001</td><td>平台消息去重，主键 <code>(platform_msg_id, channel)</code>；<strong>按客户删除时故意保留</strong>（否则老消息被当新消息处理）</td></tr>
+    <tr><td><code>gateway_leases</code></td><td>0003</td><td>写入域租约：<code>scope</code> 主键、持有者、心跳、到期时间</td></tr>
+    <tr><td><code>tickets</code> / <code>ticket_events</code></td><td>0001</td><td>运维工单与事件流（预留，当前由 ops-agent 自己的 ledger 承担）</td></tr>
+    <tr><td><code>audit_log</code></td><td>0001</td><td>审计。由触发器保证不可 UPDATE/DELETE（除非显式 <code>set local app.allow_purge='on'</code>）</td></tr>
+    <tr><td><code>schema_migrations</code></td><td>—</td><td>迁移账本，记录每个文件的 sha256；已应用的文件被改动会直接报错</td></tr>
+  </tbody>
+</table>
+
+<div class="key-box cc-insight">
+  <strong>为什么知识条目没进库：</strong>知识正文留在 <code>kb/*.json</code> + git 里，是刻意的。人工审核、diff、回滚、按条 reviewer 签字这些流程依赖 git；把正文搬进数据库会丢掉这些，而检索索引（chunk + 向量）随时可重建，进不进库都不影响正确性。所以数据库只装"业务状态"，不装"知识的源"。
+</div>
+
+<h2 id="sec-5">5 可选性：不启数据库，行为一行不变</h2>
+
+<p class="num-item"><strong>1）</strong>这是整轮改造最重要的工程约束。四个包原本<strong>零运行时依赖</strong>，装完就能跑；如果一上来强制 PostgreSQL，安装门槛会从"拷目录"变成"先会运维数据库"，现有部署全炸。所以每一项新能力都做成<strong>开关 + 双实现</strong>。</p>
+
+<h3 id="sec-5-1">5.1 开关矩阵</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:22%">开关</th><th style="width:16%">默认</th><th style="width:20%">开了之后</th><th>不开时</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>DSH_DB</code></td><td>关</td><td>数据库能力可用（迁移、健康检查、所有 PG 实现）</td><td>不 import <code>pg</code>，纯文件模式</td></tr>
+    <tr><td><code>DSH_CS_STORE</code></td><td><code>json</code></td><td><code>postgres</code>：会话/消息/用量进库，多实例共享</td><td>与原实现一致（json 文件）</td></tr>
+    <tr><td><code>replyWebhook</code> 配置</td><td>无</td><td>启用投递队列（重试 + 死信）</td><td>只写 jsonl 并返回 <code>{delivered:true}</code>，<strong>逐字节与原行为一致</strong></td></tr>
+    <tr><td><code>token</code> / <code>tokenFile</code></td><td>无</td><td>admin 端点需要凭证；面板显示登录页</td><td>全开，但启动时打一条 <code>warn</code> 说明管理端点是公开的</td></tr>
+    <tr><td><code>retention</code> 配置</td><td>3/30/30/90 天</td><td>保留期归档与清除</td><td>端点仍可用，只做干跑</td></tr>
+    <tr><td><code>healthPublic</code></td><td>开</td><td><code>false</code>：<code>/health</code> 也要令牌</td><td>编排系统可免令牌探活</td></tr>
+  </tbody>
+</table>
+
+<p class="num-item"><strong>2）</strong>验证方式是<strong>同一份测试跑两遍</strong>：<code>store-smoke</code>、<code>outbox-smoke</code>、<code>inbox-smoke</code>、<code>message-smoke</code>、<code>purge-smoke</code>、<code>dead-smoke</code>、<code>db-smoke</code>、<code>lease-smoke</code> 都有 <code>contract()</code> 函数，对两套实现跑完全相同的断言。<code>verify-all.sh</code> 因此有"不连库 944 条 / 连库 1093 条"两种口径，都在 CI 里跑。</p>
+
+<h2 id="sec-6">6 测试：从 507 条到 1093 条</h2>
+
+<h3 id="sec-6-1">6.1 基线对比</h3>
+
+<table class="cmp-table">
+  <thead>
+    <tr><th style="width:18%">维度</th><th>🟠 重构前</th><th>🔵 重构后</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>检查入口</td><td>21 个</td><td><span class="good">36 个</span></td></tr>
+    <tr><td>断言总数</td><td>507</td><td><span class="good">944（不连库）/ 1093（连库）</span></td></tr>
+    <tr><td>全量耗时</td><td>18.16s</td><td>37.97s</td></tr>
+    <tr><td>退出码</td><td>0</td><td><span class="good">0（两种模式）</span></td></tr>
+    <tr><td>外部依赖</td><td>全部离线</td><td>全部离线（连库模式需要一个 Docker Postgres）</td></tr>
+    <tr><td>回归保护粒度</td><td>整体指标（recall@1 等）</td><td><span class="good">逐条用例（哪条掉了一目了然）</span></td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec-6-2">6.2 新增的检查入口</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:24%">入口</th><th style="width:12%">断言数（连库）</th><th>验的是什么</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>db-smoke.mjs</code></td><td>62</td><td>配置解析、迁移状态、10 张表结构、约束行为（唯一键/枚举/级联/append-only 触发器），全程单事务回滚不留数据</td></tr>
+    <tr><td><code>store-smoke.mjs</code></td><td>56</td><td>两套存储同契约；级联删除；去重窗口；重启后可见</td></tr>
+    <tr><td><code>outbox-smoke.mjs</code></td><td>50</td><td>幂等、租约领取、退避序列、重启续投、真实 HTTP 收发（前 2 次 503 后成功）</td></tr>
+    <tr><td><code>lease-smoke.mjs</code></td><td>22</td><td>抢占、第二个实例被拒、disposer 释放、过期接管、心跳丢失</td></tr>
+    <tr><td><code>inbox-smoke.mjs</code></td><td>38</td><td>受理即返回、重投不二次唤醒、建会话失败仍受理、恢复后补处理、重试用尽进死信、限流在受理前拒绝</td></tr>
+    <tr><td><code>health-smoke.mjs</code></td><td>22</td><td>200/503 判定、租约丢失时报告、数据库不可达不抛错、traceId 12 位且不重复</td></tr>
+    <tr><td><code>auth-smoke.mjs</code></td><td>45</td><td>四种凭证来源、两角色互不越权、cookie 属性、令牌文件权限告警、常量时间比较</td></tr>
+    <tr><td><code>lease-guard-smoke.mjs</code></td><td>18</td><td>丢锁后四类写入全拒、HTTP 503、被拒入站不唤醒模型、worker 自停</td></tr>
+    <tr><td><code>message-smoke.mjs</code></td><td>41</td><td>消息归档、一轮一条回复（碎片合并）、用量累加、时区正确、归档失败不影响主流程</td></tr>
+    <tr><td><code>dead-smoke.mjs</code></td><td>35</td><td>死信可见、重放成功、已发出的不可重放、审计留痕、未知队列 400</td></tr>
+    <tr><td><code>purge-smoke.mjs</code></td><td>41</td><td>保留期规划、干跑、字符串 <code>"false"</code> 不算真删、级联清除、审计、租约丢失时拒绝</td></tr>
+    <tr><td><code>panel-dom-smoke.mjs</code></td><td>23</td><td>在最小 DOM 里真跑面板脚本并模拟点击（重放按钮走完整链路）</td></tr>
+    <tr><td><code>eval-gate-smoke.mjs</code></td><td>27</td><td>门禁自身的自测：该挂的时候必须挂（回退用例、指标下降、用例消失、引用失效），并验退出码</td></tr>
+    <tr><td><code>packaging-smoke.mjs</code></td><td>77</td><td>四个包 <code>npm pack</code> 真实清单：凭证不外发、每个 exports 目标在包里、真装一次并 import 每个入口</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec-6-3">6.3 门禁设计要点</h3>
+
+<p class="num-item"><strong>1）</strong>断言优先于快照。会话状态这类结构用"契约测试"（<code>contract(store, label)</code>）而不是黄金文件——两套实现必须对同一份断言全绿，结构变动不会造成无意义的重写。</p>
+
+<p class="num-item"><strong>2）</strong><code>gateway-smoke</code> 那 109 条<strong>一条都没改</strong>。它是纯回归门禁：每加一个能力，这 109 条必须原封不动全绿。整个重构期间每次都是 109 PASS。</p>
+
+<p class="num-item"><strong>3）</strong>检查必须<strong>能挂</strong>。每个测试写完都做过反向验证：故意改坏一处，确认它报错并指出具体位置。例如把 <code>files[]</code> 里的 <code>time.js</code> 删掉，<code>packaging-smoke</code> 立刻报 4 条失败并点名"找不到 <code>time.js</code>"。</p>
+
+<h3 id="sec-6-4">6.4 测试与实现过程中抓到的真 bug</h3>
+
+<p class="num-item"><strong>1）</strong>这些都不是"测试写错了"，是<strong>产品代码里真实存在的缺陷</strong>，靠新增的验收手段暴露出来。我认为这是这轮改造最有说服力的部分。</p>
+
+<table>
+  <thead>
+    <tr><th style="width:5%">#</th><th style="width:8%">阶段</th><th style="width:42%">缺陷</th><th>修法</th></tr>
+  </thead>
+  <tbody>
+    <tr><td>1</td><td>P2</td><td><code>load()</code> 先置 <code>loaded=true</code> 再 <code>await</code>；并发首调读空 → 重复建会话</td><td>先 <code>await store.load()</code>，成功后再置标志</td></tr>
+    <tr><td>2</td><td>P2</td><td>PG 读回来的 <code>groupId</code> 是 <code>null</code>，而 <code>observe()</code> 用 <code>!== undefined</code> 判断私聊 → <strong>私聊会话会被当群聊走 @ 分支</strong></td><td><code>rowToRecord()</code> 显式还原 <code>null</code></td></tr>
+    <tr><td>3</td><td>P5</td><td>幂等键把 <code>at</code> 时间戳算进哈希 → 平台重投算出不同键 → <strong>客户收到两条一样的回复</strong></td><td>幂等键改为平台消息 id / 内容指纹（<code>inboxKey</code>）</td></tr>
+    <tr><td>4</td><td>P6</td><td><code>inboxKey()</code> 内容指纹里含 <code>\u0000</code> → PG jsonb 报 <code>22P05: \u0000 cannot be converted to text</code> → <strong>没有 messageId 的消息在数据库模式直接崩</strong></td><td>指纹先 <code>shortHash</code> 再入库</td></tr>
+    <tr><td>5</td><td>P7</td><td><code>emit()</code> 开始抛错后，<code>observe()</code> 里三处 <code>void emit(...)</code> 变成无人接管的 rejection → <strong>租约丢失时整个网关进程崩</strong></td><td><code>trackReply()</code> 统一收集 + <code>.catch(warn)</code></td></tr>
+    <tr><td>6</td><td>P8</td><td><code>usage_daily</code> 用 <code>toISOString().slice(0,10)</code> → <strong>东八区凌晨 0–8 点的用量记到前一天</strong></td><td><code>time.js</code> 的 <code>localDay()</code> 用本地年月日</td></tr>
+    <tr><td>7</td><td>P8</td><td>流式到达的 assistant 片段被逐条存成消息、token 重复计</td><td><code>turn/end</code> 时合并为一条，用量只算一次</td></tr>
+    <tr><td>8</td><td>P9</td><td><code>emit()</code> 里 jsonl 追加失败（EPERM）会<strong>让回复根本发不出去</strong></td><td>记账包 <code>try/catch</code> 只 warn——记账失败不能挡住发送</td></tr>
+    <tr><td>9</td><td>P9</td><td>投递在飞时无法等待 → 死信断言随机失败</td><td><code>pendingReplies</code> + <code>flushArchives()</code> 循环等待</td></tr>
+    <tr><td>10</td><td>P11</td><td><code>confirm('…\n…')</code> 写在模板字符串里，Node 先吃掉一层转义 → <strong>生成的浏览器 JS 跨行字符串，<code>SyntaxError</code></strong>（<code>node --check panel.js</code> 却通过）</td><td>源文件写 <code>\\n</code>；并加"生成的脚本能跑"的断言</td></tr>
+    <tr><td>11</td><td>P11</td><td><code>assistant/message</code> 事件形状写成 <code>{data:{text}}</code>（正确是 <code>{data:{message:{content:[…]}}}</code>）→ 取不到文本 → 走兜底话术「抱歉，我这边刚才没处理成功，能再说一次吗？」</td><td><strong>兜底会掩盖错误</strong>：测试改为断言具体回复文本</td></tr>
+    <tr><td>12</td><td>P14</td><td><code>files[]</code> 列了目录 <code>adapter</code>，而包根的 <code>.npmignore</code> <strong>不能覆盖 <code>files[]</code></strong> → <code>npm pack</code> 把 <code>adapter/.env.local</code>（<strong>真实 QQ AppSecret</strong>）打进包里</td><td>子目录 <code>.npmignore</code>（唯一有效位置）+ <code>packaging-smoke</code> 直接问 npm 要清单</td></tr>
+    <tr><td>13</td><td>P14</td><td><code>kb-core</code> 发布包缺 5 个模块（<code>hybrid/bm25/chunks/embed/stats</code>）→ 任何人安装后 <code>Cannot find module</code></td><td>补齐 <code>files[]</code>；检查里"真装一次并 import"专抓这类</td></tr>
+  </tbody>
+</table>
+
+<div class="key-box cc-insight">
+  <strong>最值得记的一条：</strong>#11 说明"兜底话术"是测试的天敌。系统用一句「抱歉，刚才没处理成功」接住了所有异常，从外面看一切正常——只有断言具体文本才能发现它其实一直没读到模型输出。
+</div>
+<h2 id="sec-7">7 怎么部署</h2>
+
+<h3 id="sec-7-1">7.1 三种部署形态</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:18%">形态</th><th style="width:26%">需要的开关</th><th style="width:26%">能力</th><th>限制</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>单机文件模式</strong></td>
+      <td>什么都不设</td>
+      <td>与重构前完全一致；投递队列在有 webhook 时自动启用</td>
+      <td>单进程（PID 锁）；会话状态在本机文件里</td>
+    </tr>
+    <tr>
+      <td><strong>单机 + 数据库</strong></td>
+      <td><code>DSH_DB=1</code><br><code>DSH_CS_STORE=postgres</code></td>
+      <td>会话/消息/用量进库；数据库租约；审计入表；保留期可执行</td>
+      <td>仍单进程（租约仍是单写入者）</td>
+    </tr>
+    <tr>
+      <td><strong>多实例</strong></td>
+      <td>同上，多个进程共用一套数据库</td>
+      <td>数据库租约决定谁写：持有者处理入站，其它实例被拒并等待接管；租约过期可自动接管</td>
+      <td>需要外部负载均衡把入站打到持有者；非持有者返回 503（<code>LEASE_LOST</code>）</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3 id="sec-7-2">7.2 起库与迁移</h3>
+
+<div class="code-block"><span class="cm"># 起库（默认 55432 端口，避开常见的 5432 冲突）</span>
+./scripts/db-up.sh
+
+<span class="cm"># 只用本次会话、不写 .env.db：</span>
+DSH_DB_IMAGE=postgres:18-alpine ./scripts/db-up.sh
+
+<span class="cm"># 停库（保数据）/ 连数据一起清</span>
+./scripts/db-down.sh
+./scripts/db-down.sh --purge
+
+<span class="cm"># 看迁移状态（不应用）</span>
+DSH_DB=1 node cs-agent/db/migrate.mjs --status
+</div>
+
+<p class="num-item"><strong>1）</strong><code>db-up.sh</code> 会做五件事：校验 docker、检查端口占用、<code>docker compose up -d</code>、轮询容器健康（最多 60s）、按需 <code>npm install --no-save pg</code> 并执行迁移。</p>
+
+<p class="num-item"><strong>2）</strong>迁移器会记录每个文件的 sha256。<strong>已应用过的迁移文件被改动会直接报错</strong>，要求"加一个新迁移而不是改历史"。这是刻意的：改历史会让不同环境悄悄产生不同的表结构。</p>
+
+<h3 id="sec-7-3">7.3 主要配置项</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:26%">配置</th><th style="width:14%">默认</th><th>说明</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>DSH_DB</code></td><td>关</td><td>启用数据库能力（<code>1/on/true/yes</code>）</td></tr>
+    <tr><td><code>DSH_DB_URL</code></td><td>—</td><td>完整连接串，优先于分项配置</td></tr>
+    <tr><td><code>DSH_DB_PORT</code></td><td>55432</td><td>compose 与客户端共用</td></tr>
+    <tr><td><code>DSH_CS_STORE</code></td><td><code>json</code></td><td><code>json</code> / <code>postgres</code></td></tr>
+    <tr><td><code>token</code> / <code>tokenFile</code></td><td>无</td><td>管理端令牌。<strong>推荐 <code>tokenFile</code></strong>（权限 600 的独立文件），避免令牌进 YAML / git</td></tr>
+    <tr><td><code>inboundToken</code> / <code>inboundTokenFile</code></td><td>无</td><td>入站专用令牌（适配器用），不能访问管理端点；未配时复用 admin 令牌以保持旧行为</td></tr>
+    <tr><td><code>healthPublic</code></td><td><code>true</code></td><td><code>false</code> 时探活也要令牌</td></tr>
+    <tr><td><code>retention</code></td><td>3/30/30/90 天</td><td>群聊 3 天归档、30 天清除；私聊 30 天归档、90 天清除。<code>0</code> = 不自动处理</td></tr>
+    <tr><td><code>outboxRetry</code> / <code>inboxRetry</code></td><td>见下文</td><td><code>maxAttempts 5</code>、<code>baseMs 2000</code>、<code>factor 4</code>、<code>maxMs 120000</code>、<code>leaseMs 120000</code>、<code>graceMs 2000</code>、<code>sweepMs 5000</code></td></tr>
+    <tr><td><code>leaseScope</code></td><td><code>default</code></td><td>多实例时区分不同的写入域</td></tr>
+    <tr><td><code>leaseTtlMs</code> / <code>leaseHeartbeatMs</code></td><td>30000 / 10000</td><td>租约有效期与心跳间隔</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec-7-4">7.4 端点一览</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:10%">角色</th><th style="width:40%">端点</th><th>用途</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><strong>public</strong></td><td><code>GET /health</code></td><td>探活：返回 store / lease / 队列积压 / 数据库状态 / 失败项；<code>ok=false</code> 时返回 <strong>503</strong></td></tr>
+    <tr><td><strong>inbound</strong></td><td><code>POST {route}</code></td><td>平台消息入口（适配器调用）</td></tr>
+    <tr><td rowspan="6"><strong>admin</strong></td><td><code>GET /panel</code>、<code>GET /sessions</code>、<code>GET /history</code></td><td>面板与只读查询</td></tr>
+    <tr><td><code>POST /mode</code>、<code>/reply</code>、<code>/label</code>、<code>/archive</code></td><td>接管、回复、标记、归档</td></tr>
+    <tr><td><code>POST /delete</code>、<code>/reset</code>、<code>/config</code></td><td>删除会话、重置、改 QQ 凭证（<strong>不返回 secret 值</strong>）</td></tr>
+    <tr><td><code>GET /dead</code>、<code>POST /replay</code></td><td>死信查看与人工重放（写审计）</td></tr>
+    <tr><td><code>GET|POST /retention</code></td><td>保留期计划（GET 永远干跑）/ 执行（写审计）</td></tr>
+    <tr><td><code>GET /messages</code>、<code>/inbox</code>、<code>/outbox</code>、<code>/audit</code>、<code>/status</code></td><td>消息归档、队列积压、审计、运行状态</td></tr>
+  </tbody>
+</table>
+
+<h3 id="sec-7-5">7.5 运维面板</h3>
+
+<p class="num-item"><strong>1）</strong><code>/panel</code> 是三栏结构：左边会话列表（搜索、按人工/机器人过滤、批量归档），中间对话与回复，右上角「运维」按钮进入四张卡片：</p>
+
+<ol class="sub-items">
+  <li><span class="sub-text"><span class="tag oc-tag">健康</span> 是否 ok、运行时长、存储与租约类型、两个队列积压、数据库版本、失败的检查项</span></li>
+  <li><span class="sub-text"><span class="tag cc-tag">死信</span> inbox / outbox 分区，显示正文预览、试了几次、最后错误；单条「重放」与「全部重放」</span></li>
+  <li><span class="sub-text"><span class="tag cc-tag">数据保留</span> 先看计划（干跑），有计划才出现「执行」按钮，<code>confirm</code> 二次确认</span></li>
+  <li><span class="sub-text"><span class="tag oc-tag">审计</span> 最近 20 条操作来源与动作</span></li>
+</ol>
+
+<div class="key-box insight">
+  <strong>面板没有登录态以外的权限分级：</strong>能打开面板就能删数据。所以<strong>不要把它暴露到公网</strong>，只放在内网或 SSH 隧道后面。这一点写进了 <code>INSTALL.md</code> 与 <code>docs/refactor-p11.md</code>。</div>
+<h2 id="sec-8">8 关键设计决策与理由</h2>
+
+<p class="num-item"><strong>1）</strong>下面每条都是"本来可以走另一条路"的地方，写清为什么不走。</p>
+
+<table>
+  <thead>
+    <tr><th style="width:5%">#</th><th style="width:24%">决策</th><th>理由与代价</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>1</td>
+      <td>数据库<strong>可选</strong>，不是前提</td>
+      <td>四个包原本零依赖、装完就能跑。强制 PostgreSQL 会把安装门槛从"拷目录"变成"会运维数据库"，现有部署全炸。<strong>代价</strong>：每项能力要维护两套实现，测试跑两遍（944 / 1093 条）</td>
+    </tr>
+    <tr>
+      <td>2</td>
+      <td>知识条目正文<strong>不进库</strong></td>
+      <td>人工审核、diff、回滚、reviewer 签字都依赖 git。数据库只装业务状态。<strong>代价</strong>：跨库 join 做不了（但按条目 id 关联足够）</td>
+    </tr>
+    <tr>
+      <td>3</td>
+      <td>新能力开关<strong>只认显式配置</strong></td>
+      <td><code>DSH_CS_STORE</code> 与 <code>DSH_DB</code> 分开：<code>DSH_DB=1</code> 只表示"数据库能力可用"，不该顺手改变会话存在哪儿。否则开发者 <code>export DSH_DB=1</code> 后跑 <code>verify-all</code>，<code>gateway-smoke</code> 会意外连库</td>
+    </tr>
+    <tr>
+      <td>4</td>
+      <td>投递队列<strong>只在配了 webhook 时启用</strong></td>
+      <td>没配 webhook 的部署（比如只做存档）不该凭空多出一套队列和状态文件。这条让 <code>gateway-smoke</code> 那 109 条断言<strong>逐字节不变</strong></td>
+    </tr>
+    <tr>
+      <td>5</td>
+      <td>幂等键<strong>从内容派生</strong>，不用随机 UUID</td>
+      <td>平台会重投同一条消息；随机键会让每次重投都变成一条新记录。<strong>代价</strong>：同一秒内两条措辞完全相同的消息会被当成一条（可接受，比重复回复好）</td>
+    </tr>
+    <tr>
+      <td>6</td>
+      <td>丢锁后<strong>立刻停写</strong>（503），不降级</td>
+      <td>租约被接管说明另一个实例在写。继续写会导致两实例同时唤醒模型、客户收两条、会话映射被覆盖成失效 session——全都不报错。宁可显式失败</td>
+    </tr>
+    <tr>
+      <td>7</td>
+      <td>审计<strong>双写</strong>（jsonl + 表）</td>
+      <td>表是查询索引，jsonl 是"数据库挂了也能查"的底稿。两处都失败只 warn——操作已经生效，回滚更糟</td>
+    </tr>
+    <tr>
+      <td>8</td>
+      <td><code>audit_log</code> / <code>ticket_events</code> 用<strong>数据库触发器</strong>做 append-only</td>
+      <td>用权限控制需要额外的角色体系；触发器 + <code>set local app.allow_purge='on'</code> 这一个逃生舱口，既能保证不可改，又能让测试/合规清理走明路</td>
+    </tr>
+    <tr>
+      <td>9</td>
+      <td>评测门禁<strong>逐条比基线</strong>，不比总分</td>
+      <td>"recall 88% vs 90%" 定位不到问题；"用例 X 以前命中 Y、现在返回 Z" 直接指到知识条目。同时校验用例引用的条目真实存在，否则改名后门禁静默失效</td>
+    </tr>
+    <tr>
+      <td>10</td>
+      <td>发布包检查<strong>问 npm</strong>，不自己复刻规则</td>
+      <td>npm 的 <code>files[]</code> / <code>.npmignore</code> / 总是包含项的规则细节多且会变；复刻一份等于制造第二个真源。<strong>代价</strong>：检查依赖 npm 可用</td>
+    </tr>
+    <tr>
+      <td>11</td>
+      <td>面板渲染<strong>不用框架</strong>，仍是一段内联脚本</td>
+      <td>零依赖是这套插件的卖点，为了一个内网面板引入构建链不值。代价是模板字符串里的反斜杠要写两层（P11 那个 <code>SyntaxError</code> 就是这么来的，现已加检查）</td>
+    </tr>
+    <tr>
+      <td>12</td>
+      <td>每个阶段一个提交 + 一份文档</td>
+      <td>目的是<strong>可单独回滚</strong>。任一处出问题，<code>git revert</code> 一个提交就退回上一个可用状态，不需要理解整套改造</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2 id="sec-9">9 还没做的，以及已知风险</h2>
+
+<h3 id="sec-9-1">9.1 明确没做</h3>
+
+<table>
+  <thead>
+    <tr><th style="width:22%">缺什么</th><th style="width:34%">现状</th><th>影响与建议</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><strong>成本核算</strong></td>
+      <td><code>usage_daily</code> 记了轮数与 token（含缓存读写），但<strong>没有单价</strong>，算不出钱</td>
+      <td>要回答"这个月花了多少"，需要配置单价表（按模型分）。这是下一个最该做的（P15）</td>
+    </tr>
+    <tr>
+      <td><strong>保留期自动跑</strong></td>
+      <td>端点有了、纯函数有了，但<strong>没有内置定时器</strong>，要外部 cron 调 <code>POST /retention</code></td>
+      <td>真实部署必须配一个 cron，否则保留期只是"能执行"而不是"在执行"</td>
+    </tr>
+    <tr>
+      <td><strong>多租户</strong></td>
+      <td>只预留了 <code>tenant_id</code> / <code>account_id</code> 列，没有隔离逻辑</td>
+      <td>SaaS 化才需要。当前"按客户删除"已按 <code>key</code>/<code>senderId</code>/<code>groupId</code> 支持，够单一组织用</td>
+    </tr>
+    <tr>
+      <td><strong>告警接线</strong></td>
+      <td><code>/health</code> 可被采集，但没有 Prometheus exporter / webhook 告警</td>
+      <td>队列积压、死信增长这些指标现在只能人肉看面板。接线是运维侧工作，接口已具备</td>
+    </tr>
+    <tr>
+      <td><strong>面板权限分级</strong></td>
+      <td>有 admin / inbound 两角色，但面板内"能看"与"能删"不分离</td>
+      <td>多客服场景下需要"只读客服"角色。当前建议面板只在内网</td>
+    </tr>
+    <tr>
+      <td><strong>发布管理</strong></td>
+      <td>prompt / 知识库没有版本化与灰度；改 prompt 就是改代码</td>
+      <td>多人协作后才痛。当前靠 git 版本 + 评测门禁兜底</td>
+    </tr>
+    <tr>
+      <td><strong>端到端安装测试</strong></td>
+      <td><code>packaging-smoke</code> 验到"装出来的文件能 import"，但没验"从 tarball 装 → 起网关 → 发一条消息"</td>
+      <td>真正的发布前验收。要起 DSH 环境，成本较高</td>
+    </tr>
+    <tr>
+      <td><strong>路由拆分</strong></td>
+      <td><code>gateway.js</code> 里 21 条路由还是一个 <code>if</code> 链</td>
+      <td>可读性问题，不影响正确性。要拆的话建议按"面板 / 队列 / 运营 / 入站"四组</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3 id="sec-9-2">9.2 已知风险</h3>
+
+<p class="num-item"><strong>1）</strong><strong>单机文件模式仍是单进程。</strong>靠文件租约保证，两个进程共用同一数据目录会被拒（第二个启动失败）。要多实例必须切 <code>DSH_CS_STORE=postgres</code>。这是设计如此，不是残留缺陷。</p>
+
+<p class="num-item"><strong>2）</strong><strong><code>pg</code> 是 optionalDependency。</strong>忘了 <code>npm install</code> 时不会在启动报错，只在真正启用数据库时报 <code>database driver "pg" is missing</code>。这是"零依赖可跑"的代价。</p>
+
+<p class="num-item"><strong>3）</strong><strong>json 模式的 <code>listMessages</code> 整份读文件。</strong>会话上万条时会慢。切数据库即解决；文件模式定位是"小规模/单机自用"。</p>
+
+<p class="num-item"><strong>4）</strong><strong>入站重试可能重复归档消息。</strong><code>messages_platform_msg_uniq</code> 部分唯一索引会挡住重复行，但会留一条 warn 日志噪音。不影响正确性。</p>
+
+<p class="num-item"><strong>5）</strong><strong>迁移文件不可变。</strong>已应用的迁移被改动会报错——这是保护，但如果有人不熟悉，会觉得"改不了一行 SQL"。规则是加新迁移文件。</p>
+
+<div class="key-box oc-insight">
+  <strong>如果要我给一句最实在的建议：</strong>下一步先把 <strong>P15 成本核算</strong>和<strong>保留期定时器</strong>补上——这两件事不做，"能落地"就还差最后一公里：老板问"这个月花了多少"答不出来，合规问"数据删了吗"只能答"接口有了但没人调"。
+</div>
+
+<h2 id="sec-10">10 附：怎么自己验一遍</h2>
+
+<div class="code-block"><span class="cm"># 全部检查（不连库，约 38 秒）</span>
+bash scripts/verify-all.sh
+
+<span class="cm"># 连库全量（需要 Docker）</span>
+./scripts/db-up.sh
+DSH_DB=1 bash scripts/verify-all.sh
+
+<span class="cm"># 单独跑某一项</span>
+node cs-agent/gateway-smoke.mjs        <span class="cm"># 109 条纯回归，基线从未改过</span>
+DSH_DB=1 node cs-agent/db-smoke.mjs    <span class="cm"># 62 条表结构与约束</span>
+node scripts/packaging-smoke.mjs       <span class="cm"># 77 条发布包自检</span>
+node scripts/eval-gate.mjs             <span class="cm"># 检索评测比基线</span>
+
+<span class="cm"># 看每个阶段的改动理由与回滚方式</span>
+ls docs/refactor-p*.md
+</div>
+
+<h2 id="sec-rev">修订记录</h2>
+
+<table>
+  <tr><th style="width:70px">版本号</th><th style="width:110px">修订日期</th><th style="width:80px">作者</th><th>修订内容</th></tr>
+  <tr><td>1.0</td><td>2026-10-27</td><td></td><td>首次发布：P1–P14 十四个阶段的整体验收报告，含启动故障清单、逐阶段交付、测试基线对比、13 个被测试抓出的真 bug、部署方式、12 条设计决策与未做项</td></tr>
+</table>
+
+      <h2 id="sec-rev">修订记录</h2>
+      <table>
+        <tr><th style="width:70px">版本号</th><th style="width:100px">修订日期</th><th style="width:70px">作者</th><th>修订内容</th></tr>
+        <tr><td>1.0</td><td>2026-10-27</td><td></td><td>首次发布：P1–P14 十四个阶段的整体验收报告。</td></tr>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+// Ctrl+S 保存下载
+document.addEventListener('keydown', function(e) {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    var clone = document.documentElement.cloneNode(true);
+    clone.querySelectorAll('[contenteditable]').forEach(function(el) {
+      el.removeAttribute('contenteditable');
+    });
+    var html = '<!DOCTYPE html>\n' + clone.outerHTML;
+    var blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    var title = document.getElementById('doc-title');
+    var version = document.getElementById('doc-version');
+    var filename = (title ? title.textContent.trim() : 'document');
+    if (version) filename += '-' + version.textContent.trim();
+    filename += '.html';
+    a.download = filename.replace(/[^a-zA-Z0-9一-龥._-]/g, '_');
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+});
+
+// 目录滚动高亮 - scroll 驱动
+(function() {
+  window.addEventListener('DOMContentLoaded', function() {
+    var tocLinks = document.querySelectorAll('#toc-nav a[data-section]');
+    if (tocLinks.length === 0) return;
+
+    var sections = [];
+    tocLinks.forEach(function(link) {
+      var secId = link.getAttribute('data-section');
+      var el = document.getElementById(secId);
+      if (el) sections.push({ id: secId, el: el, link: link });
+    });
+
+    if (sections.length === 0) return;
+
+    var activeId = null;
+    var clickScrollLock = false;
+    var clickScrollTimer = null;
+
+    function computeActive() {
+      var aboveTop = [];
+      var inView = [];
+      var viewportHeight = window.innerHeight;
+      sections.forEach(function(s) {
+        var rect = s.el.getBoundingClientRect();
+        if (rect.top <= 0) {
+          aboveTop.push(s);
+        }
+        if (rect.top < viewportHeight && rect.bottom > 0) {
+          inView.push(s);
+        }
+      });
+      if (aboveTop.length > 0) {
+        return aboveTop[aboveTop.length - 1].id;
+      }
+      if (inView.length > 0) {
+        return inView[0].id;
+      }
+      return sections[0].id;
+    }
+
+    function setActive(id) {
+      if (id === activeId) return;
+      activeId = id;
+      tocLinks.forEach(function(l) { l.classList.remove('active'); });
+      var link = document.querySelector('#toc-nav a[data-section="' + id + '"]');
+      if (link) {
+        link.classList.add('active');
+        link.scrollIntoView({ block: 'nearest', behavior: 'instant' });
+      }
+    }
+
+    function updateHighlight() {
+      if (clickScrollLock) return;
+      var id = computeActive();
+      if (id) setActive(id);
+    }
+
+    var observer = new IntersectionObserver(function() {
+      updateHighlight();
+    }, { rootMargin: '-20px 0px -80% 0px', threshold: 0 });
+
+    sections.forEach(function(s) { observer.observe(s.el); });
+
+    tocLinks.forEach(function(link) {
+      link.addEventListener('click', function(e) {
+        e.preventDefault();
+        var secId = link.getAttribute('data-section');
+        var target = document.getElementById(secId);
+        if (target) {
+          clickScrollLock = true;
+          clearTimeout(clickScrollTimer);
+          setActive(secId);
+          target.scrollIntoView({ behavior: 'instant', block: 'start' });
+          clickScrollTimer = setTimeout(function() {
+            clickScrollLock = false;
+            updateHighlight();
+          }, 200);
+        }
+      });
+    });
+
+    updateHighlight();
+
+    var scrollRaf = null;
+    window.addEventListener('scroll', function() {
+      if (clickScrollLock) return;
+      if (scrollRaf) return;
+      scrollRaf = requestAnimationFrame(function() {
+        scrollRaf = null;
+        updateHighlight();
+      });
+    }, { passive: true });
+
+    // 目录区滚动穿透阻止
+    var tocNav = document.querySelector('#toc-sidebar nav');
+    if (tocNav) {
+      tocNav.addEventListener('wheel', function(e) {
+        var scrollTop = tocNav.scrollTop;
+        var scrollHeight = tocNav.scrollHeight;
+        var clientHeight = tocNav.clientHeight;
+        var atTop = scrollTop <= 0;
+        var atBottom = scrollTop + clientHeight >= scrollHeight - 1;
+        if ((e.deltaY > 0 && atBottom) || (e.deltaY < 0 && atTop)) {
+          e.preventDefault();
+        }
+      }, { passive: false });
+    }
+  });
+})();
+
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  themeVariables: {
+    primaryColor: '#e8f0fe',
+    primaryTextColor: '#1a1a1a',
+    primaryBorderColor: '#90b4e0',
+    lineColor: '#5b8abf',
+    fontFamily: '-apple-system, "Microsoft YaHei", sans-serif',
+    fontSize: '13px',
+    nodeBorder: '#90b4e0'
+  },
+  flowchart: { curve: 'basis', padding: 8, nodeSpacing: 30, rankSpacing: 35 }
+});
+</script>
+</body>
+</html>

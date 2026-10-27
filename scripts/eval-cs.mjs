@@ -10,6 +10,7 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { LEAKS } from './reply-leaks.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = join(here, '..')
@@ -24,15 +25,7 @@ const waitSeconds = Number(option('wait', '180'))
 const runId = new Date().toISOString().replace(/[-:T]/g, '').slice(2, 14)
 const cases = JSON.parse(readFileSync(join(root, 'eval/cases.json'), 'utf8'))
 
-// 泄漏检测：出现这些词说明回复跑偏了，哪怕答得通顺也算失败。
-const LEAKS = [
-  ['实现细节', /DSH|Harness|agent|prompt|token/iu],
-  ['知识库编号', /知识库条目|`[a-z][a-z0-9-]{6,}`/u],
-  ['检索旁白', /我先查|查一下知识库|查询结果匹配/u],
-  ['错误承诺', /我去查|我这边核对|我先确认一下你的实例|我帮你查/u],
-  ['平台术语', /插件|扩展|预设|社区/u],
-  ['URL', /https?:\/\//u],
-]
+// 泄漏规则在 scripts/reply-leaks.mjs：门禁（eval-gate.mjs）用的是同一份。
 
 console.log(`running ${cases.length} cases (run ${runId})`)
 

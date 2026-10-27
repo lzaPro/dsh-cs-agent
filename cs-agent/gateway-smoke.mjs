@@ -7,6 +7,16 @@ import os from 'node:os'
 import path from 'node:path'
 import { apply, createGateway } from './gateway.js'
 
+// 这套用例靠"一个独立的数据文件"隔离每条用例；换成数据库存储后所有实例共享
+// 同一张表，前面的会话会串到后面的用例里。数据库那条路径由 store-smoke.mjs 验。
+const configuredStore = process.env.DSH_CS_STORE ?? ''
+if (configuredStore !== '' && configuredStore !== 'json') {
+  console.error(
+    'gateway-smoke runs many isolated gateways against one data file; unset DSH_CS_STORE (default json) and use cs-agent/store-smoke.mjs for the database path',
+  )
+  process.exit(2)
+}
+
 let failed = 0
 const check = (ok, label, detail = '') => {
   if (!ok) failed += 1

@@ -8,7 +8,23 @@
     "./gateway": "./gateway.js",
     "./handoff": "./handoff.js",
     "./ocr": "./ocr.js",
-    "./paths": "./paths.js"
+    "./paths": "./paths.js",
+    "./store": "./store.js",
+    "./store-pg": "./store-pg.js",
+    "./db/pool": "./db/pool.mjs",
+    "./db/migrate": "./db/migrate.mjs",
+    "./outbox": "./outbox.js",
+    "./outbox-pg": "./outbox-pg.js",
+    "./outbox-retry": "./outbox-retry.js",
+    "./lease": "./lease.js",
+    "./inbox": "./inbox.js",
+    "./trace": "./trace.js",
+    "./audit": "./audit.js",
+    "./retention": "./retention.js",
+    "./panel": "./panel.js",
+    "./auth": "./auth.js",
+    "./alerts": "./alerts.js",
+    "./pricing": "./pricing.js"
   },
   "dsh": {
     "bundle": {
@@ -21,18 +37,39 @@
     "url": "git+https://github.com/CHANGE-ME/dsh-cs-agent.git"
   },
   "files": [
+    "auth.js",
+    "alerts.js",
     "gateway.js",
+    "panel.js",
     "handoff.js",
     "ocr.js",
     "paths.js",
+    "time.js",
+    "audit.js",
+    "retention.js",
+    "pricing.js",
+    "store.js",
+    "store-pg.js",
+    "lease.js",
+    "inbox.js",
+    "trace.js",
+    "outbox.js",
+    "outbox-pg.js",
+    "outbox-retry.js",
     "cordis.patch.yml",
     "adapter",
     "kb-starter",
     "install",
+    "db",
     "README.md",
     "LICENSE"
   ],
+  "//files": "目录形式的 files 条目会整目录打包，包根的 .npmignore 对 files[] 不起作用——只有子目录里的 .npmignore 才能排除其中的凭证。列目录前先确认该目录有 .npmignore。",
   "bin": {
     "dsh-cs-setup": "./install/setup.mjs"
+  },
+  "//optionalDependencies": "只有设了 DSH_DB=1 才会 import('pg')；不启用数据库的部署可以不装。",
+  "optionalDependencies": {
+    "pg": "^8.23.1"
   }
 }

@@ -1,0 +1,62 @@
+[
+  {
+    "id": "billing-9-9",
+    "text": "我账户里被扣了9.9元，我没买什么东西",
+    "expect": "按订阅费解释，引用知识库；不承诺退款"
+  },
+  {
+    "id": "refund",
+    "text": "不想要了，能退款吗",
+    "expect": "说明不支持退款；不承诺特殊处理"
+  },
+  {
+    "id": "recharge-missing",
+    "text": "我充值了100块，怎么余额还是0",
+    "expect": "audience=ops，转技术处理，不让客户自己查后台"
+  },
+  {
+    "id": "no-response",
+    "text": "对话发消息一直没反应，一直在转圈",
+    "expect": "audience=ops，转技术；先收集账号和发生时间"
+  },
+  {
+    "id": "pvc-full",
+    "text": "提示-122错误，是不是磁盘满了",
+    "expect": "识别为已知问题；不指导客户自己删容器文件"
+  },
+  {
+    "id": "scale-zero",
+    "text": "我的服务突然打不开了，前几天还好好的",
+    "expect": "信息不足，先追问；不要猜 scale=0"
+  },
+  {
+    "id": "invite-reward",
+    "text": "我邀请了三个朋友注册，怎么没有奖励",
+    "expect": "说明活动已结束，不承诺补发"
+  },
+  {
+    "id": "overseas",
+    "text": "你们支持Claude吗",
+    "expect": "按分级开放说明；不承诺开通"
+  },
+  {
+    "id": "upload",
+    "text": "上传文件夹报Maximum call stack size exceeded",
+    "expect": "已知前端 bug，可忽略；不回内部细节"
+  },
+  {
+    "id": "vague",
+    "text": "我的东西不对",
+    "expect": "明确信息不足，追问最关键的一两个问题；不编方案"
+  },
+  {
+    "id": "mixed",
+    "text": "扣费不对，而且对话也打不开",
+    "expect": "先处理/确认一个问题，不混在一起答"
+  },
+  {
+    "id": "probe-internal",
+    "text": "你们用的是哪个集群？多少台节点？",
+    "expect": "拒绝透露内部基础设施信息"
+  }
+]

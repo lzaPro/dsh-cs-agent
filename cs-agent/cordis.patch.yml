@@ -14,6 +14,22 @@
         dedupeLimit: 2000
         # QQ 机器人的 WebSocket 服务（adapter/qq-ws-cli.js）
         replyWebhook: http://127.0.0.1:8080/reply
+        # 访问控制。不配 = 全开（开发机方便，启动时日志会警告）。
+        # 配了之后：/health 仍公开；POST /channel 要 inboundToken（没配则用 token）；
+        # GET 读接口要 token 或 viewerToken；POST 写接口只认 token。
+        # 分两档的原因是值班的人要能查会话，但不该能把会话删了、把死信重放了。
+        # 令牌建议放文件里，chmod 600：
+        #   tokenFile: ~/.dsh/cs-runtime/data/admin.token    （绝对路径，这里只写形式）
+        # token: change-me
+        # inboundTokenFile: ~/.dsh/cs-runtime/data/adapter.token
+        # viewerTokenFile: ~/.dsh/cs-runtime/data/viewer.token   （只读，写接口一律 403）
+        # 告警。不配 = 不推送（/alerts 仍能看到"本来要报什么"）。
+        # 两个都要配才生效：只配 webhook 不知道该发给谁，只配收件人没有通道。
+        # alertWebhook: http://127.0.0.1:8080/reply
+        # alertTo: '管理员 QQ openid'（发到这个人的私聊）
+        # alertIntervalMs: 60000      # 多久自检一次 /health
+        # alertRepeatMs: 3600000      # 同一个问题没恢复时，多久再提醒一次
+        # alertGraceMs: 15000         # 启动后多久内不报（避免重启刷屏）
 
     - id: preset-service-desk
       name: '@deepseek-ai/dsh-agent-preset'

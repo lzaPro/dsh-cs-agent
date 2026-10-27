@@ -1,0 +1,158 @@
+[
+  {
+    "id": "sig-9-9",
+    "query": "我账户里被扣了9.9元，我没买什么东西",
+    "expect": "subscription-fee-9-9-19-9",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-19-9-auto",
+    "query": "为什么每月自动扣我19.9",
+    "expect": "subscription-fee-9-9-19-9",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-dialog",
+    "query": "对话没反应",
+    "expect": "dialog-no-response",
+    "tier": "direct"
+  },
+  {
+    "id": "para-dialog",
+    "query": "发消息一直转圈，等很久也没有回复",
+    "expect": "dialog-no-response",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-minus122",
+    "query": "报错 -122",
+    "expect": "pvc-disk-full",
+    "tier": "direct"
+  },
+  {
+    "id": "para-disk",
+    "query": "容器磁盘写满了，日志里是 No space left on device",
+    "expect": "pvc-disk-full",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-401",
+    "query": "401 Unauthorized 是怎么回事",
+    "expect": "gateway-token-changed",
+    "tier": "direct"
+  },
+  {
+    "id": "para-token",
+    "query": "调用一直鉴权失败，提示 token 验证失败",
+    "expect": "gateway-token-changed",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-apikey",
+    "query": "API Key 未绑定，模型调不了",
+    "expect": "api-key-binding",
+    "tier": "direct"
+  },
+  {
+    "id": "para-apikey",
+    "query": "配置好了但是提示缺少密钥，用不了模型",
+    "expect": "api-key-binding",
+    "tier": "direct"
+  },
+  {
+    "id": "para-recharge",
+    "query": "充值了钱没到账",
+    "expect": "recharge-not-credited",
+    "tier": "direct"
+  },
+  {
+    "id": "para-referral",
+    "query": "邀请好友没有送额度",
+    "expect": "signup-referral-rewards",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-refund",
+    "query": "我要退款",
+    "expect": "refund-not-supported",
+    "tier": "direct"
+  },
+  {
+    "id": "para-overseas",
+    "query": "能不能用 Claude",
+    "expect": "overseas-models",
+    "tier": "direct"
+  },
+  {
+    "id": "para-hardware",
+    "query": "能买一体机吗",
+    "expect": "purchase-all-in-one",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-deletion",
+    "query": "想注销账号，余额转到另一个账号",
+    "expect": "account-deletion-migration",
+    "tier": "direct"
+  },
+  {
+    "id": "para-usage",
+    "query": "查看我的磁盘占用",
+    "expect": "disk-cpu-usage-check",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-stack",
+    "query": "上传文件夹报 Maximum call stack size exceeded",
+    "expect": "upload-folder-stack-overflow",
+    "tier": "direct"
+  },
+  {
+    "id": "sig-400",
+    "query": "400 Bad Request model not found",
+    "expect": "bad-request-400",
+    "tier": "direct"
+  },
+  {
+    "id": "para-scale0",
+    "query": "服务打不开，副本是0",
+    "expect": "container-scale-zero",
+    "tier": "direct"
+  },
+  {
+    "id": "amb-model",
+    "query": "模型不能用了",
+    "expect": "overseas-models",
+    "tier": "direct"
+  },
+  {
+    "id": "amb-login",
+    "query": "登录不了",
+    "expect": "account-deletion-migration",
+    "tier": "reference"
+  },
+  {
+    "id": "miss-printer",
+    "query": "打印机连不上",
+    "expect": null,
+    "tier": "miss"
+  },
+  {
+    "id": "miss-company",
+    "query": "你们公司在哪里",
+    "expect": null,
+    "tier": "miss"
+  },
+  {
+    "id": "miss-weather",
+    "query": "今天天气怎么样",
+    "expect": null,
+    "tier": "miss"
+  },
+  {
+    "id": "miss-invoice",
+    "query": "怎么开发票",
+    "expect": null,
+    "tier": "miss"
+  }
+]

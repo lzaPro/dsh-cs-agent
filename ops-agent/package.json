@@ -8,6 +8,8 @@
     ".": "./index.js",
     "./dispatcher": "./dispatcher.js",
     "./cluster": "./cluster.js",
+    "./scope": "./scope.js",
+    "./promql": "./promql.js",
     "./metrics": "./metrics.js",
     "./task-tools": "./task-tools.js",
     "./panel": "./panel.js",
@@ -34,6 +36,8 @@
     "index.js",
     "dispatcher.js",
     "cluster.js",
+    "scope.js",
+    "promql.js",
     "metrics.js",
     "task-tools.js",
     "panel.js",
@@ -43,6 +47,8 @@
     "locale",
     "cordis.patch.yml",
     "README.md",
+    "icon.svg",
     "LICENSE"
-  ]
+  ],
+  "//files": "目录形式的 files 条目会整目录打包，包根的 .npmignore 对 files[] 不起作用——只有子目录里的 .npmignore 才能排除其中的凭证。列目录前先确认该目录有 .npmignore。"
 }

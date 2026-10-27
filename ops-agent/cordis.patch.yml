@@ -10,6 +10,19 @@
         notifyWebhook: http://127.0.0.1:8080/reply
         # 管理员 QQ openid：运维失败/超时/待批准变更时通知到这里。留空则只写台账。
         adminId: ''
+        # 账号作用域：把"这张工单属于哪个客户"变成服务端的硬约束。
+        # 配了之后，ops_k8s / ops_logs 只能碰该账号的命名空间，且必须显式写 namespace
+        # （不写会退化成 -A 扫全集群，直接拒绝）。不配 = 不分客户，行为与重构前一致。
+        # accounts:
+        #   acme:
+        #     namespaces: [acme-prod, acme-staging]
+        #     contexts: [prod]          # 可选
+        #     aliases: ['Acme Inc']     # 可选，客服写中文名/域名也能对上
+        #   globex:
+        #     namespaces: [globex]
+        # 作用域同时约束 kubectl 与 PromQL：绑了账号的工单，指标查询必须显式写
+        # namespace 匹配器（namespace="acme-prod" 或 namespace=~"a|b" 枚举），
+        # 通配/排除式一律拒绝——否则一条 sum(rate(...)) 就把所有客户的数据聚合在一起了。
 
     # 控制面板：http://127.0.0.1:3080/ops/panel —— 工单看板、变更审批、知识库候选审核。
     - id: ops-panel
