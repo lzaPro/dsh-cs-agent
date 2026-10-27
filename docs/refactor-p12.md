@@ -27,7 +27,7 @@
 | `eval/rag-baseline.json`（新） | 26 条用例的逐条基线：top 命中、verdict、分数、指标、kb 指纹 |
 | `scripts/reply-leaks.mjs`（新） | 6 条泄漏规则，`eval-cs.mjs` 与门禁共用一份 |
 | `scripts/eval-cs.mjs` | 删掉内联的 LEAKS，改成 import；行为不变 |
-| `scripts/eval-gate-smoke.mjs`（新） | 27 条断言，验证门禁"该挂时真挂" |
+| `scripts/eval-gate-smoke.mjs`（新） | 27 条断言，验证门禁"该挂时真挂"；自带迷你知识库，不依赖部署的 `kb/` |
 | `scripts/verify-all.sh` | 新增 `== retrieval gate` 与 `== gate self-test`（现 42 步） |
 
 ## 检索门禁怎么判
