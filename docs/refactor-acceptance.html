@@ -193,7 +193,7 @@ p { margin: 8px 0; line-height: 1.6; }
 <a data-section="sec-4-2" class="toc-h3">4.2 数据库表与迁移</a>
 <a data-section="sec-5">5 可选性：不启数据库行为不变</a>
 <a data-section="sec-5-1" class="toc-h3">5.1 开关矩阵</a>
-<a data-section="sec-6">6 测试：从 507 条到 1093 条</a>
+<a data-section="sec-6">6 测试：从 507 条到 1091 条</a>
 <a data-section="sec-6-1" class="toc-h3">6.1 基线对比</a>
 <a data-section="sec-6-2" class="toc-h3">6.2 新增的检查入口</a>
 <a data-section="sec-6-3" class="toc-h3">6.3 门禁设计要点</a>
@@ -225,7 +225,7 @@ p { margin: 8px 0; line-height: 1.6; }
 
 <p class="num-item"><strong>1）</strong>这轮改造的目标不是"代码更漂亮"，而是<strong>让这套客服插件能承接真实的客服流量</strong>。重构前它是一套能跑通演示的骨架：消息能进来、模型能回、面板能看，但几乎所有"真实系统该有"的保障都缺——消息会因为一次图片下载超时丢掉，回复会因为适配器抖一下永久不发，出了事没有任何 id 能把一条消息串起来，删客户数据没有任何手段。</p>
 
-<p class="num-item"><strong>2）</strong>十四个阶段全部提交，每个阶段都配一套可复跑的验收。基线是一条命令跑 21 步、507 条断言；现在是 36 步、<strong>944 条断言（不连库）/ 1093 条（连库）</strong>，全部通过。</p>
+<p class="num-item"><strong>2）</strong>十四个阶段全部提交，每个阶段都配一套可复跑的验收。基线是一条命令跑 21 步、507 条断言；现在是 36 步、<strong>942 条断言（不连库）/ 1091 条（连库）</strong>，全部通过。</p>
 
 <div class="key-box oc-insight">
   <strong>一句话结论：</strong>重构把"消息不丢、回复不重、故障可追、数据可管、发布可验"这五件事从"没做"变成了"有代码、有测试、有文档、能回滚"。剩下没做的是成本核算与发布管理，以及若干规模上限。
@@ -241,7 +241,7 @@ p { margin: 8px 0; line-height: 1.6; }
     <tr><td>提交数（本分支）</td><td>—</td><td><strong>14</strong></td><td>P1–P14，每阶段一个原子提交 + 一份阶段文档</td></tr>
     <tr><td>改动文件 / 行数</td><td>—</td><td>78 个 / <strong>+11208 −684</strong></td><td><code>git diff --stat</code> 基线对比</td></tr>
     <tr><td>verify-all 步骤</td><td>21</td><td><strong>36</strong></td><td>新增 15 个检查入口</td></tr>
-    <tr><td>断言总数</td><td>507</td><td><strong>944 / 1093</strong></td><td>1093 为启用数据库时的数量</td></tr>
+    <tr><td>断言总数</td><td>507</td><td><strong>942 / 1091</strong></td><td>1091 为启用数据库时的数量</td></tr>
     <tr><td>全量检查耗时</td><td>18.16s</td><td><strong>37.97s</strong></td><td>多出来的是 5 个存储/队列/租约测试</td></tr>
     <tr><td>数据库表 / 迁移</td><td>0 / 0</td><td><strong>10 / 5</strong></td><td>全部可选，不启库行为不变</td></tr>
     <tr><td><code>cs-agent</code> 根目录模块</td><td>4 个 / 2069 行</td><td><strong>17 个 / 4825 行</strong></td><td>新增 13 个模块，<code>panel.js</code> 从网关拆出</td></tr>
@@ -532,9 +532,9 @@ p { margin: 8px 0; line-height: 1.6; }
   </tbody>
 </table>
 
-<p class="num-item"><strong>2）</strong>验证方式是<strong>同一份测试跑两遍</strong>：<code>store-smoke</code>、<code>outbox-smoke</code>、<code>inbox-smoke</code>、<code>message-smoke</code>、<code>purge-smoke</code>、<code>dead-smoke</code>、<code>db-smoke</code>、<code>lease-smoke</code> 都有 <code>contract()</code> 函数，对两套实现跑完全相同的断言。<code>verify-all.sh</code> 因此有"不连库 944 条 / 连库 1093 条"两种口径，都在 CI 里跑。</p>
+<p class="num-item"><strong>2）</strong>验证方式是<strong>同一份测试跑两遍</strong>：<code>store-smoke</code>、<code>outbox-smoke</code>、<code>inbox-smoke</code>、<code>message-smoke</code>、<code>purge-smoke</code>、<code>dead-smoke</code>、<code>db-smoke</code>、<code>lease-smoke</code> 都有 <code>contract()</code> 函数，对两套实现跑完全相同的断言。<code>verify-all.sh</code> 因此有"不连库 942 条 / 连库 1091 条"两种口径，都在 CI 里跑。</p>
 
-<h2 id="sec-6">6 测试：从 507 条到 1093 条</h2>
+<h2 id="sec-6">6 测试：从 507 条到 1091 条</h2>
 
 <h3 id="sec-6-1">6.1 基线对比</h3>
 
@@ -544,7 +544,7 @@ p { margin: 8px 0; line-height: 1.6; }
   </thead>
   <tbody>
     <tr><td>检查入口</td><td>21 个</td><td><span class="good">36 个</span></td></tr>
-    <tr><td>断言总数</td><td>507</td><td><span class="good">944（不连库）/ 1093（连库）</span></td></tr>
+    <tr><td>断言总数</td><td>507</td><td><span class="good">942（不连库）/ 1091（连库）</span></td></tr>
     <tr><td>全量耗时</td><td>18.16s</td><td>37.97s</td></tr>
     <tr><td>退出码</td><td>0</td><td><span class="good">0（两种模式）</span></td></tr>
     <tr><td>外部依赖</td><td>全部离线</td><td>全部离线（连库模式需要一个 Docker Postgres）</td></tr>
@@ -726,7 +726,7 @@ DSH_DB=1 node cs-agent/db/migrate.mjs --status
     <tr>
       <td>1</td>
       <td>数据库<strong>可选</strong>，不是前提</td>
-      <td>四个包原本零依赖、装完就能跑。强制 PostgreSQL 会把安装门槛从"拷目录"变成"会运维数据库"，现有部署全炸。<strong>代价</strong>：每项能力要维护两套实现，测试跑两遍（944 / 1093 条）</td>
+      <td>四个包原本零依赖、装完就能跑。强制 PostgreSQL 会把安装门槛从"拷目录"变成"会运维数据库"，现有部署全炸。<strong>代价</strong>：每项能力要维护两套实现，测试跑两遍（942 / 1091 条）</td>
     </tr>
     <tr>
       <td>2</td>
@@ -874,6 +874,7 @@ ls docs/refactor-p*.md
 </div>
 
 <h2 id="sec-rev">修订记录</h2>
+    <p>2026-10-27 修正：断言计数按修正后的口径更新为 942 / 1091。此前的 944 / 1093 里多出 2 条重复计数，原因是 <code>scripts/check-client-plugins.mjs</code> 递归扫到了发布镜像 <code>dsh-cs-agent/</code> 里的同名包又数了一遍；该脚本已改为跳过自带 <code>.git</code> 的目录。</p>
 
 <table>
   <tr><th style="width:70px">版本号</th><th style="width:110px">修订日期</th><th style="width:80px">作者</th><th>修订内容</th></tr>

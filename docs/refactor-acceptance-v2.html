@@ -229,8 +229,8 @@ p { margin: 8px 0; line-height: 1.6; }
     <tr><td>提交数</td><td>—</td><td>22（本项目专属分支）</td></tr>
     <tr><td>改动文件 / 行数</td><td>—</td><td>100 files, <span class="oc-color">+16991 / −724</span></td></tr>
     <tr><td>自动检查步数</td><td>21</td><td><span class="good">41</span></td></tr>
-    <tr><td>断言数（纯文件模式）</td><td>507</td><td><span class="good">1279</span></td></tr>
-    <tr><td>断言数（连数据库模式）</td><td>—</td><td><span class="good">1443</span></td></tr>
+    <tr><td>断言数（纯文件模式）</td><td>507</td><td><span class="good">1277</span></td></tr>
+    <tr><td>断言数（连数据库模式）</td><td>—</td><td><span class="good">1441</span></td></tr>
     <tr><td>全量耗时</td><td>18.2s</td><td>44.9s</td></tr>
     <tr><td>数据库表</td><td>0</td><td>10（+ 6 个迁移）</td></tr>
     <tr><td>cs-agent 模块</td><td>4 个模块 / 2069 行</td><td>19 个模块 / 5758 行</td></tr>
@@ -238,7 +238,7 @@ p { margin: 8px 0; line-height: 1.6; }
 </table>
 
 <div class="key-box oc-insight">
-<strong>为什么断言数从 507 涨到 1279：</strong>不是"为了覆盖率"，而是每一阶段都有一条<span class="oc-color">当时真出过事的断言</span>。比如"客户重投只回一条""租约被接管后拒绝写入""只读令牌不能删数据""A 客户工单查 B 客户命名空间必须报错"。断言是从事故里长出来的，不是从需求文档里抄出来的。
+<strong>为什么断言数从 507 涨到 1277：</strong>不是"为了覆盖率"，而是每一阶段都有一条<span class="oc-color">当时真出过事的断言</span>。比如"客户重投只回一条""租约被接管后拒绝写入""只读令牌不能删数据""A 客户工单查 B 客户命名空间必须报错"。断言是从事故里长出来的，不是从需求文档里抄出来的。
 </div>
 
 <h2 id="sec-2">2 第二批七个阶段</h2>
@@ -443,8 +443,8 @@ sum <span class="kw">by</span> (namespace) (container_memory_usage)     <span cl
   <tbody>
     <tr class="cat"><td colspan="4">规模</td></tr>
     <tr><td>检查步数</td><td>21</td><td>36</td><td><span class="good">41</span></td></tr>
-    <tr><td>断言（纯文件）</td><td>507</td><td>944</td><td><span class="good">1279</span></td></tr>
-    <tr><td>断言（连数据库）</td><td>—</td><td>1093</td><td><span class="good">1443</span></td></tr>
+    <tr><td>断言（纯文件）</td><td>507</td><td>944</td><td><span class="good">1277</span></td></tr>
+    <tr><td>断言（连数据库）</td><td>—</td><td>1093</td><td><span class="good">1441</span></td></tr>
     <tr><td>耗时</td><td>18.2s</td><td>38.0s</td><td>44.9s</td></tr>
     <tr class="cat"><td colspan="4">本批新增入口的断言数（连库模式）</td></tr>
     <tr><td>用量与成本</td><td>—</td><td>—</td><td>63</td></tr>
@@ -525,11 +525,11 @@ sum <span class="kw">by</span> (namespace) (container_memory_usage)     <span cl
 <h2 id="sec-7">7 验收命令</h2>
 
 <div class="code-block"><span class="cm"># 纯文件模式（不需要数据库、不联网）</span>
-bash scripts/verify-all.sh                    <span class="cm"># 41 步 / 1279 条 / exit 0</span>
+bash scripts/verify-all.sh                    <span class="cm"># 41 步 / 1277 条 / exit 0</span>
 
 <span class="cm"># 连数据库模式（compose 里起 postgres:16/18，端口 55432）</span>
 ./scripts/db-up.sh
-DSH_DB=1 bash scripts/verify-all.sh           <span class="cm"># 1443 条 / exit 0</span>
+DSH_DB=1 bash scripts/verify-all.sh           <span class="cm"># 1441 条 / exit 0</span>
 
 <span class="cm"># 单阶段针对性检查</span>
 node cs-agent/usage-smoke.mjs                 <span class="cm"># 48 / 连库 63</span>
@@ -543,6 +543,7 @@ node scripts/packaging-smoke.mjs              <span class="cm"># 81（npm pack �
 <p class="num-item"><strong>跑完全部检查后应确认</strong>：10 张业务表计数均为 0（测试自己清理干净，不留脏数据）。</p>
 
 <h2 id="sec-rev">修订记录</h2>
+    <p class="note">2026-10-27 修正：断言计数按修正后的口径更新为 1277 / 1441。此前的 1279 / 1443 里多出 2 条重复计数，原因是 <code>scripts/check-client-plugins.mjs</code> 递归扫到了发布镜像 <code>dsh-cs-agent/</code> 里的同名包，把它们又数了一遍；该脚本已改为跳过自带 <code>.git</code> 的目录。</p>
 
 <table>
   <thead>
@@ -550,7 +551,7 @@ node scripts/packaging-smoke.mjs              <span class="cm"># 81（npm pack �
   </thead>
   <tbody>
     <tr><td>v1.0</td><td>2026-10-27</td><td>第一批验收（P1–P14）：14 阶段、36 步检查、944/1093 条断言、13 个被抓出的真 bug</td></tr>
-    <tr><td>v2.0</td><td>2026-10-27</td><td>第二批验收（P15–P21）：7 阶段、41 步检查、1279/1443 条断言；新增 3 个端点、5 类配置开关；3 个真问题（告警静默失效、指标越界、默认值做反）</td></tr>
+    <tr><td>v2.0</td><td>2026-10-27</td><td>第二批验收（P15–P21）：7 阶段、41 步检查、1277/1441 条断言；新增 3 个端点、5 类配置开关；3 个真问题（告警静默失效、指标越界、默认值做反）</td></tr>
   </tbody>
 </table>
 

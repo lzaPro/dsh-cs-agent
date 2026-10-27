@@ -15,7 +15,13 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const problems = []
 const checked = []
 
-/** 递归找 package.json，跳过依赖和构建产物。 */
+/**
+ * 递归找 package.json，跳过依赖与构建产物。
+ *
+ * 也跳过自带 `.git` 的目录：`dsh-cs-agent/` 是发布镜像，里面是同一批包的副本。
+ * 不跳过的话这些包会被数两遍（本地 4 条断言、发布仓库只有 2 条），
+ * 于是出现"本地 1279、镜像 1223"这种对不上的数字，把真正该看的差异盖住了。
+ */
 async function findPackages(dir, depth = 0) {
   if (depth > 2) return []
   const entries = await fs.readdir(dir, { withFileTypes: true })
@@ -24,6 +30,7 @@ async function findPackages(dir, depth = 0) {
     if (!entry.isDirectory()) continue
     if (entry.name === 'node_modules' || entry.name === '.build' || entry.name === '.git') continue
     const full = path.join(dir, entry.name)
+    if (await fs.access(path.join(full, '.git')).then(() => true, () => false)) continue
     const manifest = path.join(full, 'package.json')
     try {
       await fs.access(manifest)
