@@ -1697,7 +1697,9 @@ export function createGateway(ctx, config, options = {}) {
       if (req.method === 'GET' && url.pathname === `${route}/sessions`) {
         const includeArchived = url.searchParams.get('all') === '1'
         return sendJson(res, 200, {
-          sessions: [...sessions.values()].filter(record => includeArchived || record.archivedAt === undefined),
+          sessions: [...sessions.values()]
+            .filter(record => includeArchived || record.archivedAt === undefined)
+            .sort(byRecentActivity),
         })
       }
       if (req.method === 'POST' && url.pathname === `${route}/archive`) {
@@ -2110,6 +2112,21 @@ async function readTail(file, limit) {
     if (error?.code === 'ENOENT') return []
     throw error
   }
+}
+
+/**
+ * Order conversations the way a person working the queue expects: whoever spoke
+ * most recently is at the top. `lastSeenAt` moves on every inbound message, so a
+ * customer who just wrote jumps to the front instead of sitting wherever the
+ * conversation happened to be created. Timestamps that fail to parse sink to the
+ * bottom rather than jumping the queue, and `key` keeps the order stable between
+ * two records that share a timestamp.
+ */
+function byRecentActivity(left, right) {
+  const leftAt = Date.parse(left?.lastSeenAt ?? left?.createdAt ?? '') || 0
+  const rightAt = Date.parse(right?.lastSeenAt ?? right?.createdAt ?? '') || 0
+  if (leftAt !== rightAt) return rightAt - leftAt
+  return String(left?.key ?? '').localeCompare(String(right?.key ?? ''))
 }
 
 /** Write one JSON response. */

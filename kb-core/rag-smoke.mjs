@@ -201,6 +201,34 @@ await test('similar text scores above unrelated text', () => {
   assert.ok(cosine(base, near) > cosine(base, far))
 })
 
+await test('vectors of different widths are not comparable', () => {
+  // 512-dim hashed vectors and 1024-dim model vectors are unrelated spaces.
+  // Comparing the shared prefix would produce a plausible-looking number.
+  assert.equal(cosine([1, 0, 0], [1, 0, 0, 0]), 0)
+  assert.equal(cosine([1, 0, 0, 0], [1, 0, 0]), 0)
+})
+
+await test('a width mismatch drops the vector channel instead of scoring noise', async () => {
+  // The index was filled with 4-dimension vectors. The same embedder name now
+  // answers with 8 dimensions (a model upgrade that changed width, or a
+  // misconfigured dims). The index key still matches, so `ensure` will NOT
+  // rebuild — exactly the state that used to turn into silent noise.
+  const narrow = {
+    name: 'narrow',
+    async embed(texts) { return texts.map(() => [1, 0, 0, 0]) },
+  }
+  const holder = new IndexHolder(narrow)
+  await holder.ensure(fixtures)
+  holder.embedder = {
+    name: 'narrow',
+    async embed(texts) { return texts.map(() => [1, 0, 0, 0, 0, 0, 0, 0]) },
+  }
+  const result = await retrieve(fixtures, '报错 disk quota exceed', { limit: 3, index: holder })
+  // Nothing crashed and the lexical evidence still resolves the entry.
+  assert.equal(result.verdict, 'direct')
+  assert.equal(result.hits[0].entry.id, 'disk-full')
+})
+
 await test('semantic channel can carry a miss with no lexical overlap', async () => {
   // A stub embedder maps every text containing 转圈 to the same unit vector so
   // the test exercises the vector path alone, without depending on hash luck.
@@ -375,15 +403,22 @@ await test('ledger persists occurrences to disk', async () => {
 })
 
 await test('http embedder degrades to hash when the endpoint fails', async () => {
+  const cacheFile = path.join(root, 'vectors-degraded.json')
   const embedder = createEmbedder({
     backend: 'http',
     baseURL: 'http://127.0.0.1:9',
     onError: 'fallback',
     timeoutMs: 200,
-    cacheFile: path.join(root, 'vectors.json'),
+    cacheFile,
   })
   const [vector] = await embedder.embed(['对话没反应'])
   assert.equal(vector.length, 512)
+  // The degraded vector belongs to the hash space, not the model's. Caching it
+  // under the model key would make the degradation permanent: the endpoint
+  // could come back and this text would still answer with a hashed vector,
+  // every process restart included. Nothing should have been written at all.
+  const cached = await fs.access(cacheFile).then(() => true, () => false)
+  assert.equal(cached, false)
 })
 
 await test('off backend disables the vector channel', () => {

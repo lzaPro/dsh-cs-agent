@@ -6,11 +6,15 @@
  *   node scripts/eval-rag.mjs --cases FILE    # different case file
  *   node scripts/eval-rag.mjs --kb DIR        # different knowledge base
  *   node scripts/eval-rag.mjs --fail-below 0.9
+ *   node scripts/eval-rag.mjs --embedding http --embedding-base-url URL --embedding-model NAME
+ *                                             # score the real embedding backend
  *
  * Measures what the hybrid retriever actually promises: did the right entry come
  * back first, was the confidence tier honest, and did an unrelated question
  * stay a miss. No model, no network, no sessions — this is a pure retriever
- * benchmark, so it can run in CI.
+ * benchmark, so it can run in CI. The `--embedding http` variant is the one
+ * exception: it needs the endpoint, and it exists so that "is the real vector
+ * backend actually better than hash?" is a measurement, not an opinion.
  */
 
 import { promises as fs } from 'node:fs'
@@ -80,11 +84,38 @@ if (resolvedCases !== casesFile) {
 }
 const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'kb-rag-eval-'))
 
+/**
+ * Build the embedding block from flags.
+ *
+ * Passing only `backend: 'http'` is not enough — the embedder refuses to start
+ * without a baseURL, so the comparison this script advertises would just throw.
+ * Every extra knob is passed through as given, keeping the default (hash) path
+ * byte-for-byte unchanged.
+ *
+ * @param {Record<string, string|boolean>} options - parsed flags.
+ * @returns {{backend: string, baseURL?: string, model?: string, apiKeyEnv?: string, dims?: number}} embedding config.
+ */
+function embeddingOf(options) {
+  const embedding = { backend: String(options.embedding ?? 'hash') }
+  if (typeof options['embedding-base-url'] === 'string') embedding.baseURL = options['embedding-base-url']
+  if (typeof options['embedding-model'] === 'string') embedding.model = options['embedding-model']
+  if (typeof options['embedding-key-env'] === 'string') embedding.apiKeyEnv = options['embedding-key-env']
+  if (typeof options['embedding-dims'] === 'string') {
+    const dims = Number(options['embedding-dims'])
+    if (!Number.isFinite(dims) || dims <= 0) {
+      console.error('--embedding-dims must be a positive number')
+      process.exit(2)
+    }
+    embedding.dims = Math.trunc(dims)
+  }
+  return embedding
+}
+
 const store = createKbStore({
   kbDir,
   opsKbDir: path.resolve(workspace, 'ops-kb'),
   dataDir,
-  embedding: { backend: String(options.embedding ?? 'hash') },
+  embedding: embeddingOf(options),
 })
 
 const cases = JSON.parse(await fs.readFile(resolvedCases, 'utf8'))

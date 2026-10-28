@@ -35,6 +35,9 @@ echo '== tool output schemas'
 # 下面两步评的是部署自己的知识库（kb/）。插件包不随发布带 kb/（那是部署数据，
 # 且含客户支持话术），所以没有 kb/ 的 checkout 里明确跳过——不要让评测去评空库，
 # 那既会误报失败，也会让人以为"评测过了"。单测与门禁自检仍用 kb-core 的演示库跑。
+echo '== embedding backend'
+node scripts/eval-rag-http-smoke.mjs
+
 echo '== rag retrieval quality'
 if [ -d kb ]; then
   node scripts/eval-rag.mjs --strict

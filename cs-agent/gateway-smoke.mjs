@@ -270,6 +270,21 @@ await authed.handleHttp({ method: 'GET', url: '/channel/sessions', headers: { au
 const listed = JSON.parse(sessionsRes.body).sessions
 check(listed.length >= 3, 'lists routed sessions', String(listed.length))
 
+// Queue order: whoever spoke most recently comes first, so an agent watching the
+// list sees the customer who just wrote instead of whoever signed up first. The
+// timestamps are pinned because two messages can land in the same millisecond.
+const queue = [...authed.sessions.values()]
+const originalTimes = queue.map(record => record.lastSeenAt)
+queue.forEach((record, index) => {
+  record.lastSeenAt = new Date(Date.UTC(2026, 0, 1, 0, index)).toISOString()
+})
+const orderedRes = { code: 0, body: '', writeHead(c) { this.code = c }, end(b) { this.body = b } }
+await authed.handleHttp({ method: 'GET', url: '/channel/sessions', headers: { authorization: 'Bearer secret' } }, orderedRes)
+const orderedKeys = JSON.parse(orderedRes.body).sessions.map(record => record.key)
+const expectedKeys = [...queue].reverse().map(record => record.key)
+check(orderedKeys.join(',') === expectedKeys.join(','), 'lists the most recently active conversation first', orderedKeys.map(key => key.split(':').pop()).join(' '))
+queue.forEach((record, index) => { record.lastSeenAt = originalTimes[index] })
+
 const resetRes = { code: 0, body: '', writeHead(c) { this.code = c }, end(b) { this.body = b } }
 await authed.handleHttp({
   method: 'POST', url: '/channel/reset', headers: { authorization: 'Bearer secret' },

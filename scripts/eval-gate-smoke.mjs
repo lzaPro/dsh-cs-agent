@@ -127,7 +127,9 @@ check(
 check(typeof recorded.kb?.fingerprint === 'string' && recorded.kb.fingerprint.length === 12, 'the baseline records a knowledge base fingerprint')
 
 const repeat = await gate(['--cases', casesFile, '--baseline', baselineFile])
-check(repeat.code === 0, 'comparing the same knowledge base passes', `exit ${repeat.code}: ${repeat.out.slice(0, 200)}`)
+// 这里留全场输出而不截断：曾经偶发过一次子进程 ERR_MODULE_NOT_FOUND（重跑即好），
+// 200 字截断正好把模块名切掉，导致无法判断是环境抖动还是真的少文件。
+check(repeat.code === 0, 'comparing the same knowledge base passes', `exit ${repeat.code}: ${repeat.out.slice(0, 800)}`)
 check(repeat.out.includes('retrieval quality matches the baseline'), 'the pass message says what happened')
 
 // 改坏一份知识库：把 bad-request-400 的错误签名清空，它就不该再被 -400 命中。

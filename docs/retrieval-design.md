@@ -91,12 +91,26 @@ score = (0.46·relevance + 0.32·signature + 0.22·coverage + 0.06·prior + 0.20
 
 ```bash
 node scripts/eval-rag.mjs --strict   # CI 用：任一指标不到 100% 就失败
-cd kb-core && node rag-smoke.mjs     # 27 项单测，覆盖分块/BM25/RRF/向量单路/签名/闸门/台账
+cd kb-core && node rag-smoke.mjs     # 29 项单测，覆盖分块/BM25/RRF/向量单路/签名/闸门/台账
 ```
+
+要评真向量，把端点和模型一起给（只给 `--embedding http` 会直接报错，因为它不知道往哪请求）：
+
+```bash
+node scripts/eval-rag.mjs \
+  --embedding http \
+  --embedding-base-url https://api.openai.com/v1 \
+  --embedding-model text-embedding-3-small \
+  --embedding-dims 1536
+```
+
+`--embedding-dims` 建议显式写死。不写也能跑（宽度取自首个响应），但写死之后端点在维度上悄悄变了会当场暴露，而不是把两种维度的分数混着算。`scripts/eval-rag-http-smoke.mjs` 专门守这条链路：默认仍是 `hash-512`、裸 `--embedding http` 必须失败、给全参数后必须真按 `http:<model>` 计分。
 
 ## 七、已知局限
 
-1. **哈希向量没有语义**。同义改写靠 BM25 的词重合 + 签名，不靠「理解」。这是刻意的取舍：默认零依赖、离线可跑、结果确定。要语义就把 `embedding.backend` 换成 `http`，评测脚本支持 `--embedding http` 对比。
+1. **哈希向量没有语义**。同义改写靠 BM25 的词重合 + 签名，不靠「理解」。这是刻意的取舍：默认零依赖、离线可跑、结果确定。要语义就把 `embedding.backend` 换成 `http` 并给出 `baseURL`/`model`/`dims`，用上面那条 `--embedding http` 命令对比开关前后。
+
+   实测过一次（64 维的替身端点，只为验证链路而非衡量模型质量）：**recall@1 仍是 100%，但 miss-precision 从 100% 掉到 75%、tier-agreement 掉到 96.2%**。也就是说语义通道召回的是"像"而不是"是"，负例更容易被凑上来。开它之后必须重新调 `semanticFloor`（现在 0.45）与 `direct`（现在 0.56），不能指望换后端白拿收益。
 2. **分块是字段级，不是段落级**。长 `resolution` 当成一块，没有按步骤再切；步骤很多的条目（比如 PVC 清理五步）内部区分度不够。
 3. **评测集偏小且自建**。26 条不足以证明线上 20% 人工接入率这类结论，只能证明「这些情况没退化」。
 4. **重复检测只看签名**。两条条目讲同一件事但签名写法不同（`-122` vs `Unknown system error -122`）会被当成两条；签名里写全别名是使用者的责任，`_template.json` 有提示。

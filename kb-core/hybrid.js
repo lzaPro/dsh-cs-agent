@@ -215,8 +215,19 @@ export async function retrieve(entries, query, options) {
 
   let semantic = []
   if (options.index.embedder !== null && vectors.length === chunks.length) {
+    const width = vectors[0]?.length ?? 0
     const [queryVector] = await options.index.embedder.embed([query])
-    semantic = vectorHits(chunks, vectors, queryVector)
+    // The index may have been built from degraded (hashed) vectors while the
+    // embedding endpoint was down. A query vector of a different width lives in
+    // a different space, so drop the channel and let BM25 answer alone: a
+    // partial answer beats a confident wrong one.
+    if (width > 0 && queryVector !== undefined && queryVector.length === width) {
+      semantic = vectorHits(chunks, vectors, queryVector)
+    } else if (width > 0) {
+      process.emitWarning(
+        `dsh-kb: ignoring ${queryVector?.length ?? 0}-dimension query vectors against a ${width}-dimension index; rebuild the index once the embedding endpoint is reachable`,
+      )
+    }
   }
 
   const fused = fuse(lexical, semantic, pool)

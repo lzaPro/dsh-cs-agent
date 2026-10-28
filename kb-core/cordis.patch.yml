@@ -19,10 +19,16 @@
 
         # 向量通道。hash 是本机特征哈希（默认：零依赖、离线可用）；
         # http 走 OpenAI 兼容的 /embeddings；off 只留 BM25。
+        #
+        # 换成 http 之后 dims 建议写死：不写也能跑（宽度取自首个响应），但端点
+        # 悄悄改维度时会算出无意义的分数，写死就当场暴露。
+        # 另外语义通道召回的是「像」不是「是」，开完要重新调下面的 tuning，
+        # 尤其是 semanticFloor 和 direct，别指望换后端白拿收益。
         embedding:
           backend: hash
-          # baseURL: 'https://api.example.com/v1'
+          # baseURL: 'https://api.openai.com/v1'
           # model: 'text-embedding-3-small'
+          # dims: 1536
           # apiKeyEnv: 'EMBEDDING_API_KEY'
           # timeoutMs: 15000
           # onError: fallback        # fallback | throw

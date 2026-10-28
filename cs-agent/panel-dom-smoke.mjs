@@ -272,6 +272,31 @@ async function waitFor(fn, label) {
   await gateway.flushArchives()
 }
 
+// ── 场景三：左侧列表把刚说过话的客户排在最上面 ──────────────────────────────
+{
+  const workspace = path.join(temp, 'ws-3')
+  await fs.mkdir(workspace, { recursive: true })
+  const gateway = createGateway(fakeCtx(), {
+    route: '/channel', workspace, agentPreset: 'service-desk',
+    dataFile: path.join(temp, 'gw-3-sessions.json'),
+    outbox: path.join(temp, 'gw-3-outbox.jsonl'),
+  })
+  const quiet = await gateway.inbound({ channel: 'qq', senderId: 'quiet', text: '一小时前说过话' })
+  const fresh = await gateway.inbound({ channel: 'qq', senderId: 'fresh', text: '刚说完话' })
+  // 钉住时间：一条是一小时前，一条是刚刚，否则两条可能落在同一毫秒里。
+  gateway.sessions.get(quiet.key).lastSeenAt = new Date(Date.now() - 3600_000).toISOString()
+  gateway.sessions.get(fresh.key).lastSeenAt = new Date().toISOString()
+
+  const script = await panelScript(gateway)
+  const dom = makeDom(gateway)
+  check(run(dom, script), 'panel script runs against a queue with two conversations')
+  await settle()
+  const listed = [...dom.element('list').innerHTML.matchAll(/data-key="([^"]+)"/g)].map(match => match[1])
+  check(listed[0] === fresh.key && listed[1] === quiet.key,
+    'the customer who spoke last is at the top of the list', listed.join(' '))
+  await gateway.flushArchives()
+}
+
 await fs.rm(temp, { recursive: true, force: true })
 console.log(failed === 0 ? '\nall panel checks passed' : `\n${failed} panel check(s) failed`)
 process.exit(failed === 0 ? 0 : 1)

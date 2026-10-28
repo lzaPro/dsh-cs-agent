@@ -66,14 +66,19 @@ export function normalizeVector(vector) {
 /**
  * Cosine similarity of two unit vectors.
  *
+ * Different widths are not comparable: 512-dimension hashed vectors and
+ * 1024-dimension model vectors live in unrelated spaces. Returning 0 (instead
+ * of comparing the shared prefix) keeps a degraded index from producing
+ * confident-looking noise — 0 means "no evidence", which is the truth.
+ *
  * @param {number[]} a - first vector.
  * @param {number[]} b - second vector.
- * @returns {number} similarity in [-1, 1].
+ * @returns {number} similarity in [-1, 1], 0 when the widths differ.
  */
 export function cosine(a, b) {
-  const length = Math.min(a.length, b.length)
+  if (a.length !== b.length) return 0
   let sum = 0
-  for (let index = 0; index < length; index += 1) sum += a[index] * b[index]
+  for (let index = 0; index < a.length; index += 1) sum += a[index] * b[index]
   return sum
 }
 
@@ -256,17 +261,24 @@ export function createEmbedder(config = {}) {
       for (let start = 0; start < pending.length; start += batchSize) {
         const batch = pending.slice(start, start + batchSize)
         let vectors
+        let degraded = false
         try {
           vectors = await request(batch.map(item => item.text))
         } catch (error) {
           if (onError === 'raise') throw error
           process.emitWarning(`dsh-kb: embedding failed, using hashed vectors for this call (${error.message})`)
           vectors = degrade(batch.map(item => item.text))
+          degraded = true
         }
-        if (dims === 0 && vectors[0] !== undefined) dims = vectors[0].length
+        // Degraded vectors live in the hash space, not the model's space. They
+        // must not define the width, and they must never reach the on-disk
+        // cache: a cached hash vector would keep answering for this text long
+        // after the endpoint recovered, so the degradation would become
+        // permanent and invisible.
+        if (!degraded && dims === 0 && vectors[0] !== undefined) dims = vectors[0].length
         batch.forEach((item, offset) => {
           output[item.index] = vectors[offset]
-          cache.set(item.key, vectors[offset])
+          if (!degraded) cache.set(item.key, vectors[offset])
         })
       }
       await cache.flush()
